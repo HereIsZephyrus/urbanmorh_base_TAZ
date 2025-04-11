@@ -10,7 +10,12 @@ ogr.RegisterAll()
 
 lcz_dir = os.getenv("LCZ_DIR")
 
-def create_mask(location_dir, file):
+split_level_mapper = {
+    "natural": [0,10],
+    "water": [16.1]
+}
+
+def create_mask(location_dir, file, split_type):
     file_path = os.path.join(location_dir, file)
     LCZtiff = gdal.Open(file_path)
     LCZdata = LCZtiff.GetRasterBand(1)
@@ -18,7 +23,7 @@ def create_mask(location_dir, file):
 
     try:
         driver = ogr.GetDriverByName("ESRI Shapefile")
-        ds_path = os.path.join(location_dir, "mask.shp")
+        ds_path = os.path.join(location_dir, f"{split_type}_contour.shp")
         print(ds_path)
         if os.path.exists(ds_path):
             driver.DeleteDataSource(ds_path)
@@ -29,16 +34,16 @@ def create_mask(location_dir, file):
         print(f"error creating output shapefile: {e}")
 
     try:
-        natural_boundaries_layer = ds.CreateLayer("natural_boundaries", src, ogr.wkbLineString)
-        if natural_boundaries_layer is None:
+        boundaries_layer = ds.CreateLayer(f"{split_type}_boundaries", src, ogr.wkbLineString)
+        if boundaries_layer is None:
             print("error creating natural boundaries layer")
             return
         field_id = ogr.FieldDefn("ID", ogr.OFTInteger)
-        natural_boundaries_layer.CreateField(field_id)
+        boundaries_layer.CreateField(field_id)
         field_elev = ogr.FieldDefn("elev", ogr.OFTReal)
-        natural_boundaries_layer.CreateField(field_elev)
+        boundaries_layer.CreateField(field_elev)
 
-        levels = [0,10]
+        levels = split_level_mapper[split_type]
         boundary = gdal.ContourGenerate(
             LCZdata,
             0,
@@ -46,11 +51,10 @@ def create_mask(location_dir, file):
             levels,
             0,
             0,
-            natural_boundaries_layer,
+            boundaries_layer,
             0,
             1
         )
-        print(boundary)
     except Exception as e:
         print(f"error creating natural boundaries layer: {e}")
     
@@ -62,7 +66,8 @@ def __main__():
         for file in os.listdir(location_dir):
             if file.endswith(".tif"):
                 print(file)
-                create_mask(location_dir, file)
+                create_mask(location_dir, file, "natural")
+                create_mask(location_dir, file, "water")
                 break
 
 if __name__ == "__main__":
