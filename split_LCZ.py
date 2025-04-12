@@ -6,6 +6,10 @@ import logging
 
 logging.basicConfig(filename='split_LCZ.log', level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+console_handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 load_dotenv()
 gdal.UseExceptions()
@@ -76,7 +80,7 @@ def split_tiff(location_dir, file, split_type):
 
 def delete_shapefile(shp_path):
     shp_dir = os.path.dirname(shp_path)
-    shp_name = os.path.basename(shp_path).split('.')[0]
+    shp_name = os.path.basename(shp_path).split('.')[0] + '.'
     for file in os.listdir(shp_dir):
         if file.startswith(shp_name):
             os.remove(os.path.join(shp_dir, file))
@@ -103,10 +107,10 @@ def create_mask(location_dir, file_name, split_type):
     logger.debug(f"filter_path: {filter_path}")
     return filter_path
 
-def merge_shapefile(base_road_filepath, feature_path):
+def filter_lcz_vectors(road_filepath, feature_path):
     proj_feature_path = reproject_shapefile(feature_path)
     logger.debug(f"proj_feature_path: {proj_feature_path}")
-    splited_road_path = split_lines(base_road_filepath, proj_feature_path)
+    splited_road_path = split_lines(road_filepath, proj_feature_path)
     logger.debug(f"splited_road_path: {splited_road_path}")
     splited_road_centroid_path = calc_line_centroid(splited_road_path)
     logger.debug(f"splited_road_centroid_path: {splited_road_centroid_path}")
@@ -116,7 +120,53 @@ def merge_shapefile(base_road_filepath, feature_path):
     logger.debug(f"joined_splited_road_path: {joined_splited_road_path}")
     filtered_splited_road_path = extract_nonull_attribute(joined_splited_road_path, "FID_2")
     logger.debug(f"filtered_splited_road_path: {filtered_splited_road_path}")
+    delete_shapefile(splited_road_path)
+    delete_shapefile(splited_road_centroid_path)
+    delete_shapefile(distance_extracted_centroid_path)
     return filtered_splited_road_path
+
+def mess_up_splited_feature(splited_path):
+    # delete all attributes except FID
+    layer = QgsVectorLayer(splited_path, "splited_path", "ogr")
+    data_provider = layer.dataProvider()
+    field_indices = list(range(len(data_provider.fields())))
+    data_provider.deleteAttributes(field_indices)
+    data_provider.addAttributes([construct_index_field("FID")])
+    layer.updateFields()
+    layer.commitChanges()
+    reindex_feature(splited_path,"FID")
+
+def post_process_road(road_filepath, feature_path):
+    dissolved_splited_road_path = dissolve_shapefile(road_filepath)
+    logger.debug(f"dissolved_splited_road_path: {dissolved_splited_road_path}")
+    splited_dissove_path = split_line_with_line(dissolved_splited_road_path, dissolved_splited_road_path)
+    logger.debug(f"splited_dissove_path: {splited_dissove_path}")
+    splited_with_feature_path = split_line_with_line(splited_dissove_path, feature_path)
+    logger.debug(f"splited_with_feature_path: {splited_with_feature_path}")
+    delete_shapefile(splited_dissove_path)
+    mess_up_splited_feature(splited_with_feature_path)
+    logger.debug(f"mess_up_splited_feature_path")
+    endpoint_path = specific_vertices(splited_with_feature_path)
+    logger.debug(f"endpoint_path: {endpoint_path}")
+    return splited_with_feature_path
+
+def merge_vector(road_filepath, feature_path):
+    return road_filepath
+
+def merge_shapefile(base_road_filepath, feature_path):
+    #filtered_splited_road_path = filter_lcz_vectors(base_road_filepath, feature_path)
+    # for test
+    filtered_splited_road_path = "/mnt/repo/YZB/TAZ/precise/LCZ/wuhan/natural_contour_filter_proj_roadsplit_join_nonull.shp"
+    feature_path = "/mnt/repo/YZB/TAZ/precise/LCZ/wuhan/natural_contour_filter.shp"
+    processed_road_path = post_process_road(filtered_splited_road_path, feature_path)
+    merged_vector_path = merge_vector(processed_road_path, feature_path)
+    return merged_vector_path
+
+def search_tif(location_dir):
+    for file in os.listdir(location_dir):
+        if file.endswith(".tif"):
+            return file
+    return None
 
 def __main__():
     app.initQgis()
@@ -124,14 +174,14 @@ def __main__():
     for location in os.listdir(lcz_dir):
         location_dir = os.path.join(lcz_dir, location)
         logger.info(f"processing {location}")
-        for file in os.listdir(location_dir):
-            if file.endswith(".tif"):
-                natural_path = create_mask(location_dir, file, "natural")
-                logger.debug(f"natural_path: {natural_path}")
-                water_path = create_mask(location_dir, file, "water")
-                logger.debug(f"water_path: {water_path}")
-                break
-        logger.info(f"{location} extracted")
+
+        #tif_path = search_tif(location_dir)
+        #natural_path = create_mask(location_dir, tif_path, "natural")
+        #logger.debug(f"natural_path: {natural_path}")
+        #water_path = create_mask(location_dir, tif_path, "water")
+        #logger.debug(f"water_path: {water_path}")
+
+        natural_path = "" # for test
         merge_shapefile(base_road_filepath, natural_path)
         logger.info(f"{location} merged")
     app.exitQgis()

@@ -6,17 +6,30 @@ Processing.initialize()
 import os
 import logging
 
+def generate_save_path(origin_path, prefix = ""):
+    dir = os.path.dirname(origin_path)
+    name = os.path.basename(origin_path).split('.')[0]
+    return os.path.join(dir, f'{name}_{prefix}.shp')
+
+def run_processing_algorithm(algorithm, params):
+    result = processing.run(algorithm, params)
+    if 'error' in result:
+        print(f"error running the processing {algorithm}: {result['error']}")
+        return False
+    return True
+
+def construct_index_field(field_name):
+    return QgsField(field_name, QMetaType.Type.Int)
+
 def reindex_feature(feature_path, field_name):
     '''
     Use QGIS API to reindex the feature layer
     feature_path: the path of the feature shapefile
     field_name: the name of the field to reindex
     '''
-    # create a new field
-    field = QgsField(field_name, QMetaType.Type.Int)
     # add the field to the feature layer
     feature_layer = QgsVectorLayer(feature_path, 'Feature Layer', 'ogr')
-    feature_layer.dataProvider().addAttributes([field])
+    feature_layer.dataProvider().addAttributes([construct_index_field(field_name)])
     feature_layer.updateFields()
     monoid_field_index = feature_layer.fields().indexOf("monoid")
     monoid_map = {
@@ -24,17 +37,6 @@ def reindex_feature(feature_path, field_name):
         for f in feature_layer.getFeatures()
     }
     feature_layer.dataProvider().changeAttributeValues(monoid_map)
-    #reindex_params = {
-    #    'FIELD' : field_name,
-    #    'INPUT' : feature_path
-    #}
-    #with edit(feature_layer):
-    #    result = processing.run("native:createattributeindex", reindex_params)
-    #
-    #print(result)
-    #if 'error' in result:
-    #    print(f"error reindexing the feature layer: {result['error']}")
-    #    return ""
     return feature_path
 
 def reproject_shapefile(geo_shp_path,proj_shp_path = ""):
@@ -46,9 +48,7 @@ def reproject_shapefile(geo_shp_path,proj_shp_path = ""):
     output: the path of the projected shapefile
     '''
     if proj_shp_path == "":
-        geo_dir = os.path.dirname(geo_shp_path) 
-        geo_name = os.path.basename(geo_shp_path).split(".")[0]
-        proj_shp_path = os.path.join(geo_dir, f'{geo_name}_proj.shp')
+        proj_shp_path = generate_save_path(geo_shp_path, "proj")
     if os.path.exists(proj_shp_path):
         os.remove(proj_shp_path)
     crs_params = {
@@ -58,9 +58,7 @@ def reproject_shapefile(geo_shp_path,proj_shp_path = ""):
         'OUTPUT' : proj_shp_path,
         'TARGET_CRS' : QgsCoordinateReferenceSystem('EPSG:32650')
     }
-    result = processing.run("native:reprojectlayer", crs_params)
-    if 'error' in result:
-        print(f"error reprojecting the shapefile: {result['error']}")
+    if not run_processing_algorithm("native:reprojectlayer", crs_params):
         return ""
     return proj_shp_path
 
@@ -80,9 +78,7 @@ def filter_remain_field(proj_poly_path, line_path, filter_path = ""):
             return 0
 
     if filter_path == "":
-        line_dir = os.path.dirname(line_path)
-        line_name = os.path.basename(line_path).split('.')[0]
-        filter_path = os.path.join(line_dir, f'{line_name}_filter.shp')
+        filter_path = generate_save_path(line_path, "filter")
     if os.path.exists(filter_path):
         os.remove(filter_path)
     # iterate through the polygon layer and add the area attribute
@@ -99,10 +95,7 @@ def filter_remain_field(proj_poly_path, line_path, filter_path = ""):
     with edit(line_layer):
         for feature, line_feature in zip(poly_layer.getFeatures(), line_layer.getFeatures()):
             area = feature.geometry().area()
-            feature_id = feature.id()
             line_layer.changeAttributeValue(line_feature.id(), remain_field, determine_remain(area))
-            #line_feature['remain'] = determine_remain(area)
-            #line_layer.updateFeature(line_feature)
 
     filter_params = {
         'FIELD' : 'remain',
@@ -111,9 +104,7 @@ def filter_remain_field(proj_poly_path, line_path, filter_path = ""):
         'OUTPUT' : filter_path,
         'VALUE' : '1'
     }
-    result = processing.run("qgis:extractbyattribute", filter_params)
-    if 'error' in result:
-        print(f"error filtering line: {result['error']}")
+    if not run_processing_algorithm("qgis:extractbyattribute", filter_params):
         return ""
     return filter_path
 
@@ -126,19 +117,14 @@ def convert_line_to_polygon(line_path, poly_path = ""):
     output: the path of the polygon shapefile
     '''
     if poly_path == "":
-        line_dir = os.path.dirname(line_path)
-        line_name = os.path.basename(line_path).split('.')[0]
-        poly_path = os.path.join(line_dir, f'{line_name}_poly.shp')
+        poly_path = generate_save_path(line_path, "poly")
     if os.path.exists(poly_path):
         os.remove(poly_path)
     convert_params = {
         "INPUT": line_path,
         "OUTPUT": poly_path
     }
-    try:
-        poly = processing.run("qgis:linestopolygons", convert_params)
-    except Exception as e:
-        print(f"error converting line to polygon: {e}")
+    if not run_processing_algorithm("qgis:linestopolygons", convert_params):
         return ""
     return poly_path
 
@@ -152,9 +138,7 @@ def split_lines(base_road_filepath, feature_path, splited_road_path = ""):
     output: the path of the splited road shapefile
     '''
     if splited_road_path == "":
-        feature_dir = os.path.dirname(feature_path)
-        feature_name = os.path.basename(feature_path).split('.')[0]
-        splited_road_path = os.path.join(feature_dir, f'{feature_name}_roadsplit.shp')
+        splited_road_path = generate_save_path(feature_path, "roadsplit")
     if os.path.exists(splited_road_path):
         os.remove(splited_road_path)
     merge_params = {
@@ -162,9 +146,7 @@ def split_lines(base_road_filepath, feature_path, splited_road_path = ""):
         'LINES' : feature_path,
         'OUTPUT' : splited_road_path
     }
-    result = processing.run("native:splitwithlines", merge_params)
-    if 'error' in result:
-        print(f"error merging shapefiles: {result['error']}")
+    if not run_processing_algorithm("native:splitwithlines", merge_params):
         return ""
 
     reindex_feature(splited_road_path,"monoid")
@@ -179,9 +161,7 @@ def calc_line_centroid(line_path, centroid_path = ""):
     output: the path of the centroid shapefile
     '''
     if centroid_path == "":
-        line_dir = os.path.dirname(line_path)
-        line_name = os.path.basename(line_path).split('.')[0]
-        centroid_path = os.path.join(line_dir, f'{line_name}_centroid.shp')
+        centroid_path = generate_save_path(line_path, "centroid")
     if os.path.exists(centroid_path):
         os.remove(centroid_path)
     calc_params = {
@@ -189,9 +169,7 @@ def calc_line_centroid(line_path, centroid_path = ""):
         'INPUT' : line_path,
         'OUTPUT' : centroid_path
     }
-    result = processing.run("native:centroids", calc_params)
-    if 'error' in result:
-        print(f"error calculating the centroid of the line layer: {result['error']}")
+    if not run_processing_algorithm("native:centroids", calc_params):
         return ""
     return centroid_path
 
@@ -199,9 +177,10 @@ def create_spatial_index(feature_path):
     '''
     Use QGIS API to create a spatial index for the feature layer
     feature_path: the path of the feature shapefile
-    output: the path of the spatial index shapefile
     '''
-    processing.run("native:createspatialindex", {'INPUT' : feature_path})
+    if not run_processing_algorithm("native:createspatialindex", {'INPUT' : feature_path}):
+        return False
+    return True
 
 def join_by_attribute(input_feature_path, add_feature_path, join_path = ""):
     '''
@@ -212,9 +191,7 @@ def join_by_attribute(input_feature_path, add_feature_path, join_path = ""):
     output: the path of the joined shapefile
     '''
     if join_path == "":
-        feature_dir = os.path.dirname(input_feature_path)
-        feature_name = os.path.basename(input_feature_path).split('.')[0]
-        join_path = os.path.join(feature_dir, f'{feature_name}_join.shp')
+        join_path = generate_save_path(input_feature_path, "join")
     if os.path.exists(join_path):
         os.remove(join_path)
     join_params = {
@@ -228,9 +205,7 @@ def join_by_attribute(input_feature_path, add_feature_path, join_path = ""):
         'OUTPUT' : join_path,
         'PREFIX' : '' 
     }
-    result = processing.run("native:joinattributestable", join_params)
-    if 'error' in result:
-        print(f"error joining the input feature layer by the add feature layer: {result['error']}")
+    if not run_processing_algorithm("native:joinattributestable", join_params):
         return ""
     return join_path
 
@@ -245,9 +220,7 @@ def extract_nonull_attribute(input_feature_path, field_name, extracted_path = ""
     output: the path of the extracted shapefile
     '''
     if extracted_path == "":
-        feature_dir = os.path.dirname(input_feature_path)
-        feature_name = os.path.basename(input_feature_path).split('.')[0]
-        extracted_path = os.path.join(feature_dir, f'{feature_name}_nonull.shp')
+        extracted_path = generate_save_path(input_feature_path, "nonull")
     if os.path.exists(extracted_path):
         os.remove(extracted_path)
     extract_params = {
@@ -257,9 +230,7 @@ def extract_nonull_attribute(input_feature_path, field_name, extracted_path = ""
         'OUTPUT' : extracted_path,
         'VALUE' : ''
     }
-    result = processing.run("native:extractbyattribute", extract_params)
-    if 'error' in result:
-        print(f"error extracting the non-null attribute of the input feature layer: {result['error']}")
+    if not run_processing_algorithm("native:extractbyattribute", extract_params):
         return ""
     return extracted_path
 
@@ -273,9 +244,7 @@ def extract_whithindistance(input_feature_path, compare_feature_path, distance_e
     output: the path of the distance extracted shapefile
     '''
     if distance_extracted_path == "":
-        input_dir = os.path.dirname(input_feature_path)
-        input_name = os.path.basename(input_feature_path).split('.')[0]
-        distance_extracted_path = os.path.join(input_dir, f'{input_name}_distance.shp')
+        distance_extracted_path = generate_save_path(input_feature_path, "distance")
     if os.path.exists(distance_extracted_path):
         os.remove(distance_extracted_path)
     extract_params = {
@@ -286,8 +255,95 @@ def extract_whithindistance(input_feature_path, compare_feature_path, distance_e
     }
     create_spatial_index(input_feature_path)
     create_spatial_index(compare_feature_path)
-    result = processing.run("native:extractwithindistance", extract_params)
-    if 'error' in result:
-        print(f"error extracting the input feature layer within the distance of the compare feature layer: {result['error']}")
+    if not run_processing_algorithm("native:extractwithindistance", extract_params):
         return ""
     return distance_extracted_path
+
+def dissolve_shapefile(input_feature_path, dissolved_path = ""):
+    '''
+    Use QGIS API to dissolve the input feature layer
+    input_feature_path: the path of the input feature shapefile
+    dissolved_path: the path of the dissolved shapefile
+    if dissolved_path is not provided, the dissolved shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the dissolved shapefile
+    '''
+    if dissolved_path == "":
+        dissolved_path = generate_save_path(input_feature_path, "dissolved")
+    if os.path.exists(dissolved_path):
+        os.remove(dissolved_path)
+    dissolve_params = {
+        'FIELD' : [],
+        'INPUT' : input_feature_path,
+        'OUTPUT' : dissolved_path,
+        'SEPARATE_DISJOINT' : False
+    }
+    if not run_processing_algorithm("native:dissolve", dissolve_params):
+        return ""
+    return dissolved_path
+
+def split_line_with_line(line_path, overlap_line_path, splited_line_path = ""):
+    '''
+    Use QGIS API to split the line layer by the overlap line layer
+    line_path: the path of the line shapefile
+    overlap_line_path: the path of the overlap line shapefile
+    if splited_line_path is not provided, the splited line shapefile will be saved in the same directory as the line shapefile
+    output: the path of the splited line shapefile
+    '''
+    if splited_line_path == "":
+        splited_line_path = generate_save_path(line_path, "splited")
+    if os.path.exists(splited_line_path):
+        os.remove(splited_line_path)
+    split_params = { 
+        'INPUT' : line_path,
+        'LINES' : overlap_line_path, 
+        'OUTPUT' : splited_line_path
+    }
+    if not run_processing_algorithm("native:splitwithlines", split_params):
+        return ""
+    return splited_line_path
+
+def specific_vertices(input_feature_path, specific_vertices_path = ""):
+    '''
+    Use QGIS API to extract the specific vertices of the input feature layer
+    input_feature_path: the path of the input feature shapefile
+    if specific_vertices_path is not provided, the specific vertices shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the specific vertices shapefile
+    '''
+    if specific_vertices_path == "":
+        specific_vertices_path = generate_save_path(input_feature_path, "vertices")
+    if os.path.exists(specific_vertices_path):
+        os.remove(specific_vertices_path)
+    vertice_calc_params = {
+        'INPUT' : input_feature_path,
+        'VERTICES' : '0, -1',
+        'OUTPUT' : specific_vertices_path
+    }
+    if not run_processing_algorithm("native:extractspecificvertices", vertice_calc_params):
+        return ""
+    return specific_vertices_path
+
+def calc_intersection(input_feature_path, compare_feature_path, grid_size, intersection_path = ""):
+    '''
+    Use QGIS API to calculate the intersection of the input feature layer and the compare feature layer
+    input_feature_path: the path of the input feature shapefile
+    compare_feature_path: the path of the compare feature shapefile
+    grid_size: the size of the grid
+    if intersection_path is not provided, the intersection shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the intersection shapefile
+    '''
+    if intersection_path == "":
+        intersection_path = generate_save_path(input_feature_path, "intersection")
+    if os.path.exists(intersection_path):
+        os.remove(intersection_path)
+    intersection_params = {
+        'INPUT' : input_feature_path,
+        'OVERLAY' : compare_feature_path,
+        'INPUT_FIELDS' : [],
+        'OVERLAY_FIELDS' : [],
+        'OVERLAY_FIELDS_PREFIX' : '',
+        'OUTPUT' : intersection_path,
+        'GRID_SIZE' : grid_size
+    }
+    if not run_processing_algorithm("native:intersection", intersection_params):
+        return ""
+    return intersection_path
