@@ -2,6 +2,10 @@ from osgeo import gdal, ogr, osr
 from dotenv import load_dotenv
 from qgis.core import *
 import os
+import logging
+
+logging.basicConfig(filename='split_LCZ.log', level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 gdal.UseExceptions()
@@ -16,6 +20,7 @@ app = QgsApplication([], False)
 app.initQgis()
 from construct_qgis_functions import *
 
+logger.info("QGIS initialized")
 split_level_mapper = {
     "natural": [0,10],
     "water": [16.1]
@@ -91,17 +96,26 @@ def delete_small_features(line_path):
     return filter_path
 
 def create_mask(location_dir, file_name, split_type):
+    logger.debug(f"creating mask for {file_name}")
     contour_path = split_tiff(location_dir, file_name, split_type)
+    logger.debug(f"contour_path: {contour_path}")
     filter_path = delete_small_features(contour_path)
+    logger.debug(f"filter_path: {filter_path}")
     return filter_path
 
 def merge_shapefile(base_road_filepath, feature_path):
     proj_feature_path = reproject_shapefile(feature_path)
+    logger.debug(f"proj_feature_path: {proj_feature_path}")
     splited_road_path = split_lines(base_road_filepath, proj_feature_path)
+    logger.debug(f"splited_road_path: {splited_road_path}")
     splited_road_centroid_path = calc_line_centroid(splited_road_path)
+    logger.debug(f"splited_road_centroid_path: {splited_road_centroid_path}")
     distance_extracted_centroid_path = extract_whithindistance(splited_road_centroid_path, proj_feature_path)
+    logger.debug(f"distance_extracted_centroid_path: {distance_extracted_centroid_path}")
     joined_splited_road_path = join_by_attribute(splited_road_path, distance_extracted_centroid_path)
+    logger.debug(f"joined_splited_road_path: {joined_splited_road_path}")
     filtered_splited_road_path = extract_nonull_attribute(joined_splited_road_path, "FID_2")
+    logger.debug(f"filtered_splited_road_path: {filtered_splited_road_path}")
     return filtered_splited_road_path
 
 def __main__():
@@ -109,13 +123,17 @@ def __main__():
     base_road_filepath = copy_base_road()
     for location in os.listdir(lcz_dir):
         location_dir = os.path.join(lcz_dir, location)
+        logger.info(f"processing {location}")
         for file in os.listdir(location_dir):
             if file.endswith(".tif"):
-                print(file)
                 natural_path = create_mask(location_dir, file, "natural")
+                logger.debug(f"natural_path: {natural_path}")
                 water_path = create_mask(location_dir, file, "water")
+                logger.debug(f"water_path: {water_path}")
                 break
+        logger.info(f"{location} extracted")
         merge_shapefile(base_road_filepath, natural_path)
+        logger.info(f"{location} merged")
     app.exitQgis()
 
 if __name__ == "__main__":

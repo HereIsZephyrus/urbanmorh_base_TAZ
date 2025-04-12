@@ -4,6 +4,7 @@ import processing
 from processing.core.Processing import Processing
 Processing.initialize()
 import os
+import logging
 
 def reindex_feature(feature_path, field_name):
     '''
@@ -252,7 +253,7 @@ def extract_nonull_attribute(input_feature_path, field_name, extracted_path = ""
     extract_params = {
         'FIELD' : field_name,
         'INPUT' : input_feature_path,
-        'OPERATOR' : 9,
+        'OPERATOR' : 8,
         'OUTPUT' : extracted_path,
         'VALUE' : ''
     }
