@@ -1,3 +1,12 @@
+*.tif
+*.shp
+*.prj
+*.shx
+*.dbf
+*.cpg
+*.prj
+*-style.db
+.fuse_hidden*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
