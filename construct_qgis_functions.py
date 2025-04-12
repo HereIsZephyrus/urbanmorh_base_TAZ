@@ -9,7 +9,8 @@ import logging
 def generate_save_path(origin_path, prefix = ""):
     dir = os.path.dirname(origin_path)
     name = os.path.basename(origin_path).split('.')[0]
-    return os.path.join(dir, f'{name}_{prefix}.shp')
+    new_path = os.path.join(dir, f'{name}_{prefix}.shp')
+    return new_path
 
 def run_processing_algorithm(algorithm, params):
     result = processing.run(algorithm, params)
@@ -31,7 +32,7 @@ def reindex_feature(feature_path, field_name):
     feature_layer = QgsVectorLayer(feature_path, 'Feature Layer', 'ogr')
     feature_layer.dataProvider().addAttributes([construct_index_field(field_name)])
     feature_layer.updateFields()
-    monoid_field_index = feature_layer.fields().indexOf("monoid")
+    monoid_field_index = feature_layer.fields().indexOf(field_name)
     monoid_map = {
         f.id(): {monoid_field_index: f.id()}
         for f in feature_layer.getFeatures()
@@ -234,7 +235,7 @@ def extract_nonull_attribute(input_feature_path, field_name, extracted_path = ""
         return ""
     return extracted_path
 
-def extract_whithindistance(input_feature_path, compare_feature_path, distance_extracted_path = ""):
+def extract_whithindistance(input_feature_path, compare_feature_path, distance, distance_extracted_path = ""):
     '''
     Use QGIS API to extract the input feature layer within the distance of the compare feature layer
     input_feature_path: the path of the input feature shapefile
@@ -248,7 +249,7 @@ def extract_whithindistance(input_feature_path, compare_feature_path, distance_e
     if os.path.exists(distance_extracted_path):
         os.remove(distance_extracted_path)
     extract_params = {
-        'DISTANCE' : 20,
+        'DISTANCE' : distance,
         'INPUT' : input_feature_path,
         'REFERENCE' : compare_feature_path,
         'OUTPUT' : distance_extracted_path
@@ -322,7 +323,7 @@ def specific_vertices(input_feature_path, specific_vertices_path = ""):
         return ""
     return specific_vertices_path
 
-def calc_intersection(input_feature_path, compare_feature_path, grid_size, intersection_path = ""):
+def calc_intersection(input_feature_path, compare_feature_path, grid_size = 0.01, intersection_path = ""):
     '''
     Use QGIS API to calculate the intersection of the input feature layer and the compare feature layer
     input_feature_path: the path of the input feature shapefile
@@ -347,3 +348,47 @@ def calc_intersection(input_feature_path, compare_feature_path, grid_size, inter
     if not run_processing_algorithm("native:intersection", intersection_params):
         return ""
     return intersection_path
+
+def calc_line_intersection(input_feature_path, compare_feature_path, intersection_path = ""):
+    '''
+    Use QGIS API to calculate the intersection of the input feature layer and the compare feature layer
+    input_feature_path: the path of the input feature shapefile
+    compare_feature_path: the path of the compare feature shapefile
+    if intersection_path is not provided, the intersection shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the intersection shapefile
+    '''
+    if intersection_path == "":
+        intersection_path = generate_save_path(input_feature_path, "intersection")
+    if os.path.exists(intersection_path):
+        os.remove(intersection_path)
+    intersection_params = {
+        'INPUT' : input_feature_path,
+        'INTERSECT' : compare_feature_path,
+        'INPUT_FIELDS' : [],
+        'INTERSECT_FIELDS' : [],
+        'INTERSECT_FIELDS_PREFIX' : '',
+        'OUTPUT' : intersection_path
+    }
+    if not run_processing_algorithm("native:lineintersections", intersection_params):
+        return ""
+    return intersection_path
+
+def merge_layers(layer_list, EPSG_code, merged_path = ""):
+    '''
+    Use QGIS API to merge the input feature layer and the compare feature layer
+    layer_list: the list of the feature shapefile
+    EPSG_code: the EPSG code of the merged shapefile
+    merged_path: the path of the merged shapefile
+    '''
+    if merged_path == "":
+        merged_path = generate_save_path(layer_list[0], "merged")
+    if os.path.exists(merged_path):
+        os.remove(merged_path)
+    merge_params = {
+        'LAYERS' : layer_list,
+        'CRS' : QgsCoordinateReferenceSystem(f'EPSG:{EPSG_code}'),
+        'OUTPUT' : merged_path
+    }
+    if not run_processing_algorithm("native:mergevectorlayers", merge_params):
+        return ""
+    return merged_path
