@@ -49,7 +49,7 @@ def reproject_shapefile(geo_shp_path,proj_shp_path = ""):
     output: the path of the projected shapefile
     '''
     if proj_shp_path == "":
-        proj_shp_path = generate_save_path(geo_shp_path, "proj")
+        proj_shp_path = generate_save_path(geo_shp_path, "p")
     if os.path.exists(proj_shp_path):
         os.remove(proj_shp_path)
     crs_params = {
@@ -79,7 +79,7 @@ def filter_remain_field(proj_poly_path, line_path, filter_path = ""):
             return 0
 
     if filter_path == "":
-        filter_path = generate_save_path(line_path, "filter")
+        filter_path = generate_save_path(line_path, "f")
     if os.path.exists(filter_path):
         os.remove(filter_path)
     # iterate through the polygon layer and add the area attribute
@@ -139,7 +139,7 @@ def split_lines(base_road_filepath, feature_path, splited_road_path = ""):
     output: the path of the splited road shapefile
     '''
     if splited_road_path == "":
-        splited_road_path = generate_save_path(feature_path, "roadsplit")
+        splited_road_path = generate_save_path(feature_path, "roads")
     if os.path.exists(splited_road_path):
         os.remove(splited_road_path)
     merge_params = {
@@ -162,7 +162,7 @@ def calc_line_centroid(line_path, centroid_path = ""):
     output: the path of the centroid shapefile
     '''
     if centroid_path == "":
-        centroid_path = generate_save_path(line_path, "centroid")
+        centroid_path = generate_save_path(line_path, "c")
     if os.path.exists(centroid_path):
         os.remove(centroid_path)
     calc_params = {
@@ -192,7 +192,7 @@ def join_by_attribute(input_feature_path, add_feature_path, join_path = ""):
     output: the path of the joined shapefile
     '''
     if join_path == "":
-        join_path = generate_save_path(input_feature_path, "join")
+        join_path = generate_save_path(input_feature_path, "j")
     if os.path.exists(join_path):
         os.remove(join_path)
     join_params = {
@@ -221,7 +221,7 @@ def extract_nonull_attribute(input_feature_path, field_name, extracted_path = ""
     output: the path of the extracted shapefile
     '''
     if extracted_path == "":
-        extracted_path = generate_save_path(input_feature_path, "nonull")
+        extracted_path = generate_save_path(input_feature_path, "uni")
     if os.path.exists(extracted_path):
         os.remove(extracted_path)
     extract_params = {
@@ -269,7 +269,7 @@ def dissolve_shapefile(input_feature_path, dissolved_path = ""):
     output: the path of the dissolved shapefile
     '''
     if dissolved_path == "":
-        dissolved_path = generate_save_path(input_feature_path, "dissolved")
+        dissolved_path = generate_save_path(input_feature_path, "d")
     if os.path.exists(dissolved_path):
         os.remove(dissolved_path)
     dissolve_params = {
@@ -291,7 +291,7 @@ def split_line_with_line(line_path, overlap_line_path, splited_line_path = ""):
     output: the path of the splited line shapefile
     '''
     if splited_line_path == "":
-        splited_line_path = generate_save_path(line_path, "splited")
+        splited_line_path = generate_save_path(line_path, "s")
     if os.path.exists(splited_line_path):
         os.remove(splited_line_path)
     split_params = { 
@@ -311,7 +311,7 @@ def specific_vertices(input_feature_path, specific_vertices_path = ""):
     output: the path of the specific vertices shapefile
     '''
     if specific_vertices_path == "":
-        specific_vertices_path = generate_save_path(input_feature_path, "vertices")
+        specific_vertices_path = generate_save_path(input_feature_path, "v")
     if os.path.exists(specific_vertices_path):
         os.remove(specific_vertices_path)
     vertice_calc_params = {
@@ -358,7 +358,7 @@ def calc_line_intersection(input_feature_path, compare_feature_path, intersectio
     output: the path of the intersection shapefile
     '''
     if intersection_path == "":
-        intersection_path = generate_save_path(input_feature_path, "intersection")
+        intersection_path = generate_save_path(input_feature_path, "int")
     if os.path.exists(intersection_path):
         os.remove(intersection_path)
     intersection_params = {
@@ -381,7 +381,7 @@ def merge_layers(layer_list, EPSG_code, merged_path = ""):
     merged_path: the path of the merged shapefile
     '''
     if merged_path == "":
-        merged_path = generate_save_path(layer_list[0], "merged")
+        merged_path = generate_save_path(layer_list[0], "m")
     if os.path.exists(merged_path):
         os.remove(merged_path)
     merge_params = {

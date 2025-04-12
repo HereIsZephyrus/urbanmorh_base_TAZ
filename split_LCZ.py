@@ -151,19 +151,19 @@ def exclude_bivertices(point_intersection_path, field_name):
     if fid_index == -1:
         logger.error(f"field {field_name} not found")
         return []
+    last_fid = 0
     for feature in layer.getFeatures():
         fid = feature.attributes()[fid_index]
-        if (len(stack) == 0):
-            continue
-
-        if (stack[-1] == fid):
+        if (fid == last_fid):
             stack.append(fid)
+        last_fid = fid
     return stack
 
 def calc_remained_road(splited_with_feature_path, exclude_list):
     layer = QgsVectorLayer(splited_with_feature_path, "splited_with_feature", "ogr")
     if (len(exclude_list) == 0):
         logger.warning(f"exclude_list is empty")
+        return splited_with_feature_path
     
     # select not in exclude_list
     remained_list = []
