@@ -1,8 +1,7 @@
 from osgeo import gdal, ogr, osr
 from dotenv import load_dotenv
-
+from qgis.core import *
 import os
-import shutil
 
 load_dotenv()
 gdal.UseExceptions()
@@ -10,106 +9,22 @@ gdal.AllRegister()
 ogr.UseExceptions()
 ogr.RegisterAll()
 
-from qgis.core import *
-from qgis.PyQt.QtCore import QMetaType
-
+lcz_dir = os.getenv("LCZ_DIR")
 QGIS_PREFIX_PATH = os.environ.get("QGIS_PREFIX_PATH")
 QgsApplication.setPrefixPath(QGIS_PREFIX_PATH, True)
 app = QgsApplication([], False)
 app.initQgis()
-#from qgis import processing
-import processing
-from processing.core.Processing import Processing
-Processing.initialize()
-
-lcz_dir = os.getenv("LCZ_DIR")
+from construct_qgis_functions import *
 
 split_level_mapper = {
     "natural": [0,10],
     "water": [16.1]
 }
 
-def reproject_shapefile(geo_shp_path):
-    geo_dir = os.path.dirname(geo_shp_path) 
-    geo_name = os.path.basename(geo_shp_path).split(".")[0]
-    proj_shp_path = os.path.join(geo_dir, f'{geo_name}_proj.shp')
-    if os.path.exists(proj_shp_path):
-        os.remove(proj_shp_path)
-    crs_params = {
-        'CONVERT_CURVED_GEOMETRIES' : False,
-        'INPUT' : geo_shp_path,
-        'OPERATION' : '+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=utm +zone=50 +ellps=WGS84',
-        'OUTPUT' : proj_shp_path,
-        'TARGET_CRS' : QgsCoordinateReferenceSystem('EPSG:32650')
-    }
-    try:
-        proj_poly = processing.run("native:reprojectlayer", crs_params)
-    except Exception as e:
-        print(f"error projecting polygon: {e}")
-        return ""
-    return proj_shp_path
-
-def filter_remain_field(proj_poly_path, line_path):
-    line_dir = os.path.dirname(line_path)
-    line_name = os.path.basename(line_path).split('.')[0]
-    filter_path = os.path.join(line_dir, f'{line_name}_filter.shp')
-    if os.path.exists(filter_path):
-        os.remove(filter_path)
-    # iterate through the polygon layer and add the area attribute
-    poly_layer = QgsVectorLayer(proj_poly_path, 'Multipolygon Layer', 'ogr')
-    if not poly_layer.isValid():
-        print("Layer failed to load!")
-    line_layer = QgsVectorLayer(line_path, 'Line Layer', 'ogr')
-    if not line_layer.isValid():
-        print("Line layer failed to load!")
-    
-    line_layer.dataProvider().addAttributes([QgsField("remain", QMetaType.Type.Int)])
-    line_layer.updateFields()
-    with edit(line_layer):
-        for feature, line_feature in zip(poly_layer.getFeatures(), line_layer.getFeatures()):
-            area = feature.geometry().area()
-            line_feature['remain'] = determine_remain(area)
-            line_layer.updateFeature(line_feature)
-
-    filter_params = {
-        'FIELD' : 'remain',
-        'INPUT' : line_path,
-        'OPERATOR' : 0,
-        'OUTPUT' : filter_path,
-        'VALUE' : '1'
-    }
-    try:
-        filtered = processing.run("qgis:extractbyattribute", filter_params)
-    except Exception as e:
-        print(f"error filtering line: {e}")
-        return ""
-    return filter_path
-
-def convert_line_to_polygon(line_path):
-    line_dir = os.path.dirname(line_path)
-    line_name = os.path.basename(line_path).split('.')[0]
-    poly_path = os.path.join(line_dir, f'{line_name}_poly.shp')
-    if os.path.exists(poly_path):
-        os.remove(poly_path)
-    convert_params = {
-        "INPUT": line_path,
-        "OUTPUT": poly_path
-    }
-    try:
-        poly = processing.run("qgis:linestopolygons", convert_params)
-    except Exception as e:
-        print(f"error converting line to polygon: {e}")
-        return ""
-    return poly_path
-
 def copy_base_road():
     base_road_filepath = os.getenv("OSM_ROAD")
     current_filepath = os.path.join(os.getcwd(), "result1.shp")
-    if os.path.exists(current_filepath):
-        os.remove(current_filepath)
-    # copy this shapefile to current directory
-    shutil.copy(base_road_filepath, os.getcwd())
-    current_filepath = os.path.join(os.getcwd(), "result1.shp")
+    reproject_shapefile(base_road_filepath, current_filepath)
     return current_filepath
 
 def split_tiff(location_dir, file, split_type):
@@ -154,12 +69,6 @@ def split_tiff(location_dir, file, split_type):
     
     return ds_path
 
-def determine_remain(area):
-    if area > 100000: # 0.1 km2
-        return 1
-    else:
-        return 0
-
 def delete_shapefile(shp_path):
     shp_dir = os.path.dirname(shp_path)
     shp_name = os.path.basename(shp_path).split('.')[0]
@@ -186,14 +95,14 @@ def create_mask(location_dir, file_name, split_type):
     filter_path = delete_small_features(contour_path)
     return filter_path
 
-def merge_shapefile(base_road_filepath, water_path):
-    base_road_ds = ogr.Open(base_road_filepath)
-    base_road_layer = base_road_ds.GetLayer(0)
-    water_ds = ogr.Open(water_path)
-    water_layer = water_ds.GetLayer(0)
-    # merge the two layers
-    for feature in water_layer:
-        base_road_layer.CreateFeature(feature)
+def merge_shapefile(base_road_filepath, feature_path):
+    proj_feature_path = reproject_shapefile(feature_path)
+    splited_road_path = split_lines(base_road_filepath, proj_feature_path)
+    splited_road_centroid_path = calc_line_centroid(splited_road_path)
+    distance_extracted_centroid_path = extract_whithindistance(splited_road_centroid_path, proj_feature_path)
+    joined_splited_road_path = join_by_attribute(splited_road_path, distance_extracted_centroid_path)
+    filtered_splited_road_path = extract_nonull_attribute(joined_splited_road_path, "FID_2")
+    return filtered_splited_road_path
 
 def __main__():
     app.initQgis()
@@ -206,7 +115,7 @@ def __main__():
                 natural_path = create_mask(location_dir, file, "natural")
                 water_path = create_mask(location_dir, file, "water")
                 break
-        #merge_shapefile(base_road_filepath, water_path)
+        merge_shapefile(base_road_filepath, natural_path)
     app.exitQgis()
 
 if __name__ == "__main__":
