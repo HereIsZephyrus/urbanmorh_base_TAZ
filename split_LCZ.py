@@ -31,6 +31,10 @@ split_level_mapper = {
     "natural": [10],
     "water": [16.1]
 }
+split_operand_mapper = {
+    "natural": "> 10",
+    "water": "= 17"
+}
 
 def copy_base_road():
     base_road_filepath = os.getenv("OSM_ROAD")
@@ -102,7 +106,8 @@ def create_contour_mask(location_dir, file_name, split_type):
     logger.debug(f"proj_filter_path: {proj_filter_path}")
     return proj_filter_path
 
-def create_boundary_mask(location_dir, file_name, mask_value):
+def create_image_mask(location_dir, file_name, split_type):
+    mask_operand = split_operand_mapper[split_type]
     tif_location = os.path.join(location_dir, file_name)
     rawtiff_layer = QgsRasterLayer(tif_location, "rawtiff_layer")
     if not rawtiff_layer.isValid():
@@ -114,8 +119,8 @@ def create_boundary_mask(location_dir, file_name, mask_value):
     entry.raster = rawtiff_layer
     entry.bandNumber = 1
     entries = [entry]
-    output_path = os.path.join(location_dir, f"water_mask.tif")
-    expression = f'"rawtiff_layer@1" = {mask_value}'
+    output_path = os.path.join(location_dir, f"{split_type}_mask.tif")
+    expression = f'"rawtiff_layer@1" {mask_operand}'
     calc = QgsRasterCalculator(expression, output_path, 'GTiff',
                             rawtiff_layer.extent(), 
                             rawtiff_layer.crs(),
@@ -135,11 +140,20 @@ def create_boundary_mask(location_dir, file_name, mask_value):
     logger.debug(f"selected_poly_path: {selected_poly_path}")
     proj_selected_poly_path = reproject_shapefile(selected_poly_path)
     logger.debug(f"proj_selected_poly_path: {proj_selected_poly_path}")
-    buffer_path = create_buffer(proj_selected_poly_path, 50)
-    logger.debug(f"buffer_path: {buffer_path}")
-    proj_line_path = polygon_to_line(buffer_path)
-    logger.debug(f"proj_line_path: {proj_line_path}")
-    filter_path = delete_small_features(proj_line_path)
+    return proj_selected_poly_path
+
+def create_boundary_mask(image_mask_path, buffer_size = 0):
+    if (buffer_size > 0):
+        buffer_path = create_buffer(image_mask_path, buffer_size)
+        logger.debug(f"buffer_path: {buffer_path}")
+        proj_line_path = polygon_to_line(buffer_path)
+        logger.debug(f"proj_line_path: {proj_line_path}")
+    else:
+        proj_line_path = polygon_to_line(image_mask_path)
+        logger.debug(f"proj_line_path: {proj_line_path}")
+    singlepart_proj_line_path = multipart_to_singleparts(proj_line_path)
+    logger.debug(f"singlepart_proj_line_path: {singlepart_proj_line_path}")
+    filter_path = delete_small_features(singlepart_proj_line_path)
     logger.debug(f"filter_path: {filter_path}")
     return filter_path
 
@@ -273,15 +287,26 @@ def merge_vector(layer_list):
     rename_shapefile(dissolved_path, "boundary")
     return merged_path
 
-def merge_shapefile(base_road_filepath, natural_path, water_path):
+def merge_shapefile(base_road_filepath, natural_mask_path, natural_path, water_path):
     splited_road_path = split_lines(base_road_filepath, natural_path)
     logger.debug(f"splited_road_path: {splited_road_path}")
     intersection_with_feature_path = calc_line_intersection(splited_road_path, natural_path)
     logger.debug(f"intersection_with_feature_path: {intersection_with_feature_path}")
     filtered_splited_road_path = filter_lcz_vectors(splited_road_path, natural_path)
     processed_road_path = post_process_road(filtered_splited_road_path, natural_path, intersection_with_feature_path)
-    merged_vector_path = merge_vector([processed_road_path, natural_path, water_path])
+    masked_road_path = exclude_by_mask(processed_road_path, natural_mask_path)
+    logger.debug(f"masked_road_path: {masked_road_path}")
+    merged_vector_path = merge_vector([masked_road_path, natural_path, water_path])
     return merged_vector_path
+
+def simplify_shapefile(input_feature_path):
+    single_simplified_path = simplify_shapefile(input_feature_path, 10)
+    smoothed_path = smooth_shapefile(single_simplified_path, 0.4)
+    buffer_path = create_buffer(smoothed_path, 30)
+    multi_buffer_path = multipart_to_singleparts(buffer_path)
+    logger.debug(f"multi_buffer_path: {multi_buffer_path}")
+    skeleton_path = fetch_skeleton(multi_buffer_path)
+    return skeleton_path
 
 def __main__():
     app.initQgis()
@@ -291,14 +316,21 @@ def __main__():
         logger.info(f"processing {location}")
 
         tif_path = os.path.join(location_dir, location + ".tif")
-        #natural_path = create_contour_mask(location_dir, tif_path, "natural")
-        #logger.debug(f"natural_path: {natural_path}")
+        natural_mask_path = create_image_mask(location_dir, tif_path, "natural")
+        buffered_natural_mask_path = create_boundary_mask(natural_mask_path, buffer_size = 50)
+        logger.info(f"buffered_natural_mask_path: {buffered_natural_mask_path}")
+        natural_path = create_contour_mask(location_dir, tif_path, "natural")
+        logger.info(f"natural_path: {natural_path}")
         #water_path = create_contour_mask(location_dir, tif_path, "water")
-        water_path = create_boundary_mask(location_dir, tif_path, 17)
-        logger.debug(f"water_path: {water_path}")
+        water_mask_path = create_image_mask(location_dir, tif_path, "water")
+        logger.info(f"water_mask_path: {water_mask_path}")
+        water_path = create_boundary_mask(water_mask_path, buffer_size = 10)
+        logger.info(f"water_path: {water_path}")
 
-        #merge_shapefile(base_road_filepath, natural_path, water_path)
-        #logger.info(f"{location} merged")
+        merged_vector_path = merge_shapefile(base_road_filepath, buffered_natural_mask_path, natural_path, water_path)
+        logger.info(f"merged_vector_path: {merged_vector_path}")
+        simplified_merged_vector_path = simplify_shapefile(merged_vector_path)
+        logger.info(f"simplified_merged_vector_path: {simplified_merged_vector_path}")
     app.exitQgis()
 
 if __name__ == "__main__":

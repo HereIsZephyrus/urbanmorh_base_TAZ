@@ -520,3 +520,157 @@ def create_buffer(input_feature_path, buffer_distance, buffer_path = ""):
     if not run_processing_algorithm("native:buffer", buffer_params):
         return ""
     return buffer_path
+
+def multipart_to_singleparts(input_feature_path, output_feature_path = ""):
+    '''
+    Use QGIS API to convert the multipart feature layer to the singlepart feature layer
+    input_feature_path: the path of the input feature shapefile
+    output_feature_path: the path of the output feature shapefile
+    '''
+    if output_feature_path == "":
+        output_feature_path = generate_save_path(input_feature_path, "m2s")
+    if os.path.exists(output_feature_path):
+        delete_shapefile(output_feature_path)
+    params = {
+        'INPUT':input_feature_path,
+        'OUTPUT':output_feature_path
+    }
+    if not run_processing_algorithm("native:multiparttosingleparts", params):
+        return ""
+    return output_feature_path
+
+def exclude_by_mask(input_feature_path, mask_path, output_feature_path = ""):
+    '''
+    Use QGIS API to exclude the input feature layer by the mask layer
+    input_feature_path: the path of the input feature shapefile
+    mask_path: the path of the mask shapefile
+    '''
+    if output_feature_path == "":
+        output_feature_path = generate_save_path(input_feature_path, "mask")
+    if os.path.exists(output_feature_path):
+        delete_shapefile(output_feature_path)
+    
+    create_spatial_index(input_feature_path)
+    create_spatial_index(mask_path)
+
+    line_layer = QgsVectorLayer(input_feature_path, "line_layer", "ogr")
+    polygon_layer = QgsVectorLayer(mask_path, "polygon_layer", "ogr")
+    polygon_index = QgsSpatialIndex(polygon_layer.getFeatures())
+
+    result_layer = QgsVectorLayer("LineString?crs=" + line_layer.crs().authid(), "external_line_features", "memory")
+    result_layer.dataProvider().addAttributes(line_layer.fields().toList())
+    result_layer.updateFields()
+
+    with edit(result_layer):
+        # parallel the search
+        from concurrent.futures import ThreadPoolExecutor
+        from functools import partial
+
+        def process_line_feature(line_feature, polygon_layer, polygon_index):
+            line_geom = line_feature.geometry()
+            intersecting_poly_ids = polygon_index.intersects(line_geom.boundingBox())
+            outside = True
+            for poly_id in intersecting_poly_ids:
+                poly_feature = polygon_layer.getFeature(poly_id)
+                if line_geom.intersects(poly_feature.geometry()):
+                    outside = False
+                    break
+            
+            print(f"{line_feature.id()}: calc {len(intersecting_poly_ids)} that {outside}")
+            return (outside, line_feature) if outside else None
+
+        # Use ThreadPoolExecutor for parallel processing
+        with ThreadPoolExecutor() as executor:
+            process_func = partial(process_line_feature, polygon_layer=polygon_layer, polygon_index=polygon_index)
+            results = executor.map(process_func, line_layer.getFeatures())
+            
+            # Add features that are outside
+            for result in results:
+                if result:
+                    outside, line_feature = result
+                    result_layer.dataProvider().addFeature(line_feature)
+
+    # export the result layer to the output feature path
+    transform_context = QgsProject.instance().transformContext()
+    options = QgsVectorFileWriter.SaveVectorOptions()
+    options.driverName = "ESRI Shapefile"
+    options.fileEncoding = "utf-8"
+    error = QgsVectorFileWriter.writeAsVectorFormatV3(result_layer, output_feature_path, transform_context, options)
+    if error[0] != 0:
+        logger.error(f"error writing output layer: {error}")
+        return ""
+    return output_feature_path
+
+def simplify_shapefile(input_feature_path, tolerance, simplified_path = ""):
+    '''
+    Use QGIS API to simplify the input feature layer
+    input_feature_path: the path of the input feature shapefile
+    tolerance: the tolerance of the simplification
+    simplified_path: the path of the simplified shapefile
+    if simplified_path is not provided, the simplified shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the simplified shapefile
+    '''
+    if simplified_path == "":
+        simplified_path = generate_save_path(input_feature_path, "sp")
+    if os.path.exists(simplified_path):
+        delete_shapefile(simplified_path)
+    simplify_params = {
+        'INPUT':input_feature_path,
+        'METHOD':0,
+        'TOLERANCE':tolerance,
+        'OUTPUT':simplified_path
+    }
+    if not run_processing_algorithm("native:simplifygeometries", simplify_params):
+        return ""
+    return simplified_path
+
+def smooth_shapefile(input_feature_path, offset, smoothed_path = ""):
+    '''
+    Use QGIS API to smooth the input feature layer
+    input_feature_path: the path of the input feature shapefile
+    offset: the offset of the smoothing
+    smoothed_path: the path of the smoothed shapefile
+    if smoothed_path is not provided, the smoothed shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the smoothed shapefile
+    '''
+    if smoothed_path == "":
+        smoothed_path = generate_save_path(input_feature_path, "sm")
+    if os.path.exists(smoothed_path):
+        delete_shapefile(smoothed_path)
+    smoothed_params = {
+        'INPUT':input_feature_path,
+        'ITERATIONS':3,
+        'OFFSET':offset,
+        'MAX_ANGLE':180,
+        'OUTPUT':smoothed_path
+    }
+    if not run_processing_algorithm("native:smoothgeometry", smoothed_params):
+        return ""
+    return smoothed_path
+
+def fetch_skeleton(input_feature_path, skeleton_path = ""):
+    '''
+    Use QGIS API to fetch the skeleton of the input feature layer
+    input_feature_path: the path of the input feature shapefile
+    skeleton_path: the path of the skeleton shapefile
+    '''
+    if skeleton_path == "":
+        skeleton_path = generate_save_path(input_feature_path, "sk")
+    if os.path.exists(skeleton_path):
+        delete_shapefile(skeleton_path)
+    skeleton_params = {
+        'input':input_feature_path,
+        'smoothness':0.25,
+        'thin':-1,
+        '-a':False,'-s':True,'-l':True,'-t':False,
+        'output':skeleton_path,
+        'GRASS_REGION_PARAMETER':None,
+        'GRASS_SNAP_TOLERANCE_PARAMETER':-1,
+        'GRASS_MIN_AREA_PARAMETER':0.0001,
+        'GRASS_OUTPUT_TYPE_PARAMETER':2,
+        'GRASS_VECTOR_DSCO':'',
+        'GRASS_VECTOR_LCO':'',
+        'GRASS_VECTOR_EXPORT_NOCAT':False
+    }
+    processing.run("grass:v.voronoi.skeleton", skeleton_params)
+    return skeleton_path
