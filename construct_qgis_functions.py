@@ -6,6 +6,28 @@ Processing.initialize()
 import os
 import logging
 
+
+def delete_shapefile(shp_path):
+    shp_dir = os.path.dirname(shp_path)
+    shp_name = os.path.basename(shp_path).split('.')[0] + '.'
+    for file in os.listdir(shp_dir):
+        if file.startswith(shp_name):
+            os.remove(os.path.join(shp_dir, file))
+
+def rename_shapefile(shp_path, new_name):
+    shp_dir = os.path.dirname(shp_path)
+    shp_name = os.path.basename(shp_path).split('.')[0] + '.'
+    new_name = new_name + '.'
+    for file in os.listdir(shp_dir):
+        if file.startswith(shp_name):
+            os.rename(os.path.join(shp_dir, file), os.path.join(shp_dir, new_name))
+
+def delete_shapefile(shp_path):
+    shp_dir = os.path.dirname(shp_path)
+    shp_name = os.path.basename(shp_path).split('.')[0] + '.'
+    for file in os.listdir(shp_dir):
+        if file.startswith(shp_name):
+            os.remove(os.path.join(shp_dir, file))
 def generate_save_path(origin_path, prefix = ""):
     dir = os.path.dirname(origin_path)
     name = os.path.basename(origin_path).split('.')[0]
@@ -51,7 +73,7 @@ def reproject_shapefile(geo_shp_path,proj_shp_path = ""):
     if proj_shp_path == "":
         proj_shp_path = generate_save_path(geo_shp_path, "p")
     if os.path.exists(proj_shp_path):
-        os.remove(proj_shp_path)
+        delete_shapefile(proj_shp_path)
     crs_params = {
         'CONVERT_CURVED_GEOMETRIES' : False,
         'INPUT' : geo_shp_path,
@@ -81,7 +103,7 @@ def filter_remain_field(proj_poly_path, line_path, filter_path = ""):
     if filter_path == "":
         filter_path = generate_save_path(line_path, "f")
     if os.path.exists(filter_path):
-        os.remove(filter_path)
+        delete_shapefile(filter_path)
     # iterate through the polygon layer and add the area attribute
     poly_layer = QgsVectorLayer(proj_poly_path, 'Multipolygon Layer', 'ogr')
     if not poly_layer.isValid():
@@ -120,7 +142,7 @@ def convert_line_to_polygon(line_path, poly_path = ""):
     if poly_path == "":
         poly_path = generate_save_path(line_path, "poly")
     if os.path.exists(poly_path):
-        os.remove(poly_path)
+        delete_shapefile(poly_path)
     convert_params = {
         "INPUT": line_path,
         "OUTPUT": poly_path
@@ -141,7 +163,7 @@ def split_lines(base_road_filepath, feature_path, splited_road_path = ""):
     if splited_road_path == "":
         splited_road_path = generate_save_path(feature_path, "roads")
     if os.path.exists(splited_road_path):
-        os.remove(splited_road_path)
+        delete_shapefile(splited_road_path)
     merge_params = {
         'INPUT' : base_road_filepath,
         'LINES' : feature_path,
@@ -164,7 +186,7 @@ def calc_line_centroid(line_path, centroid_path = ""):
     if centroid_path == "":
         centroid_path = generate_save_path(line_path, "c")
     if os.path.exists(centroid_path):
-        os.remove(centroid_path)
+        delete_shapefile(centroid_path)
     calc_params = {
         'ALL_PARTS' : True,
         'INPUT' : line_path,
@@ -194,7 +216,7 @@ def join_by_attribute(input_feature_path, add_feature_path, join_path = ""):
     if join_path == "":
         join_path = generate_save_path(input_feature_path, "j")
     if os.path.exists(join_path):
-        os.remove(join_path)
+        delete_shapefile(join_path)
     join_params = {
         'DISCARD_NONMATCHING' : False,
         'FIELD' : 'monoid',
@@ -223,13 +245,51 @@ def extract_nonull_attribute(input_feature_path, field_name, extracted_path = ""
     if extracted_path == "":
         extracted_path = generate_save_path(input_feature_path, "uni")
     if os.path.exists(extracted_path):
-        os.remove(extracted_path)
+        delete_shapefile(extracted_path)
     extract_params = {
         'FIELD' : field_name,
         'INPUT' : input_feature_path,
         'OPERATOR' : 8,
         'OUTPUT' : extracted_path,
         'VALUE' : ''
+    }
+    if not run_processing_algorithm("native:extractbyattribute", extract_params):
+        return ""
+    return extracted_path
+
+def extract_by_value(input_feature_path, field_name, operator, value, extracted_path = ""):
+    '''
+    Use QGIS API to extract the input feature layer by the attribute
+    input_feature_path: the path of the input feature shapefile
+    field_name: the name of the field to extract
+    operator: the operator to use
+    value: the value to use
+    extracted_path: the path of the extracted shapefile
+    if extracted_path is not provided, the extracted shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the extracted shapefile
+    '''
+    if operator == "=":
+        operator = 0
+    elif operator == "!=":
+        operator = 1
+    elif operator == ">":
+        operator = 2
+    elif operator == ">=":
+        operator = 3
+    elif operator == "<":
+        operator = 4
+    elif operator == "<=":
+        operator = 5
+    if extracted_path == "":
+        extracted_path = generate_save_path(input_feature_path, "flt")
+    if os.path.exists(extracted_path):
+        delete_shapefile(extracted_path)
+    extract_params = {
+        'FIELD' : field_name,
+        'INPUT' : input_feature_path,
+        'OPERATOR' : 0,
+        'OUTPUT' : extracted_path,
+        'VALUE' : value
     }
     if not run_processing_algorithm("native:extractbyattribute", extract_params):
         return ""
@@ -247,7 +307,7 @@ def extract_whithindistance(input_feature_path, compare_feature_path, distance, 
     if distance_extracted_path == "":
         distance_extracted_path = generate_save_path(input_feature_path, "distance")
     if os.path.exists(distance_extracted_path):
-        os.remove(distance_extracted_path)
+        delete_shapefile(distance_extracted_path)
     extract_params = {
         'DISTANCE' : distance,
         'INPUT' : input_feature_path,
@@ -271,7 +331,7 @@ def dissolve_shapefile(input_feature_path, dissolved_path = ""):
     if dissolved_path == "":
         dissolved_path = generate_save_path(input_feature_path, "d")
     if os.path.exists(dissolved_path):
-        os.remove(dissolved_path)
+        delete_shapefile(dissolved_path)
     dissolve_params = {
         'FIELD' : [],
         'INPUT' : input_feature_path,
@@ -293,7 +353,7 @@ def split_line_with_line(line_path, overlap_line_path, splited_line_path = ""):
     if splited_line_path == "":
         splited_line_path = generate_save_path(line_path, "s")
     if os.path.exists(splited_line_path):
-        os.remove(splited_line_path)
+        delete_shapefile(splited_line_path)
     split_params = { 
         'INPUT' : line_path,
         'LINES' : overlap_line_path, 
@@ -313,7 +373,7 @@ def specific_vertices(input_feature_path, specific_vertices_path = ""):
     if specific_vertices_path == "":
         specific_vertices_path = generate_save_path(input_feature_path, "v")
     if os.path.exists(specific_vertices_path):
-        os.remove(specific_vertices_path)
+        delete_shapefile(specific_vertices_path)
     vertice_calc_params = {
         'INPUT' : input_feature_path,
         'VERTICES' : '0, -1',
@@ -335,7 +395,7 @@ def calc_intersection(input_feature_path, compare_feature_path, grid_size = 0.01
     if intersection_path == "":
         intersection_path = generate_save_path(input_feature_path, "intersection")
     if os.path.exists(intersection_path):
-        os.remove(intersection_path)
+        delete_shapefile(intersection_path)
     intersection_params = {
         'INPUT' : input_feature_path,
         'OVERLAY' : compare_feature_path,
@@ -360,7 +420,7 @@ def calc_line_intersection(input_feature_path, compare_feature_path, intersectio
     if intersection_path == "":
         intersection_path = generate_save_path(input_feature_path, "int")
     if os.path.exists(intersection_path):
-        os.remove(intersection_path)
+        delete_shapefile(intersection_path)
     intersection_params = {
         'INPUT' : input_feature_path,
         'INTERSECT' : compare_feature_path,
@@ -383,7 +443,7 @@ def merge_layers(layer_list, EPSG_code, merged_path = ""):
     if merged_path == "":
         merged_path = generate_save_path(layer_list[0], "m")
     if os.path.exists(merged_path):
-        os.remove(merged_path)
+        delete_shapefile(merged_path)
     merge_params = {
         'LAYERS' : layer_list,
         'CRS' : QgsCoordinateReferenceSystem(f'EPSG:{EPSG_code}'),
@@ -392,3 +452,71 @@ def merge_layers(layer_list, EPSG_code, merged_path = ""):
     if not run_processing_algorithm("native:mergevectorlayers", merge_params):
         return ""
     return merged_path
+
+def raster_to_vector(raster_path, vector_path = ""):
+    '''
+    Use QGIS API to convert the raster layer to the vector layer
+    raster_path: the path of the raster shapefile
+    vector_path: the path of the vector shapefile
+    if vector_path is not provided, the vector shapefile will be saved in the same directory as the raster shapefile
+    output: the path of the vector shapefile
+    '''
+    if vector_path == "":
+        vector_path = generate_save_path(raster_path, "r2v")
+    if os.path.exists(vector_path):
+        delete_shapefile(vector_path)
+    convert_params = {
+        'INPUT':raster_path,
+        'BAND':1,
+        'FIELD':'DN',
+        'EIGHT_CONNECTEDNESS':False,
+        'EXTRA':'',
+        'OUTPUT':vector_path
+    }
+    if not run_processing_algorithm("gdal:polygonize", convert_params):
+        return ""
+    return vector_path
+
+def polygon_to_line(input_feature_path, output_feature_path = ""):
+    '''
+    Use QGIS API to convert the polygon layer to the line layer
+    input_feature_path: the path of the input feature shapefile
+    output_feature_path: the path of the output feature shapefile
+    '''
+    if output_feature_path == "":
+        output_feature_path = generate_save_path(input_feature_path, "p2l")
+    if os.path.exists(output_feature_path):
+        delete_shapefile(output_feature_path)
+    params = {
+        'INPUT':input_feature_path,
+        'OUTPUT':output_feature_path
+    }
+    processing.run("native:polygonstolines", params)
+    return output_feature_path
+
+def create_buffer(input_feature_path, buffer_distance, buffer_path = ""):
+    '''
+    Use QGIS API to create the buffer of the input feature layer
+    input_feature_path: the path of the input feature shapefile
+    buffer_distance: the distance of the buffer
+    if buffer_path is not provided, the buffer shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the buffer shapefile
+    '''
+    if buffer_path == "":
+        buffer_path = generate_save_path(input_feature_path, "b")
+    if os.path.exists(buffer_path):
+        delete_shapefile(buffer_path)
+    buffer_params = {
+        'INPUT':input_feature_path,
+        'DISTANCE':buffer_distance,
+        'SEGMENTS':5,
+        'END_CAP_STYLE':0,
+        'JOIN_STYLE':0,
+        'MITER_LIMIT':2,
+        'DISSOLVE':True,
+        'SEPARATE_DISJOINT':False,
+        'OUTPUT':buffer_path
+    }
+    if not run_processing_algorithm("native:buffer", buffer_params):
+        return ""
+    return buffer_path

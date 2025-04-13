@@ -1,6 +1,7 @@
 from osgeo import gdal, ogr, osr
 from dotenv import load_dotenv
 from qgis.core import *
+from qgis.analysis import QgsRasterCalculatorEntry, QgsRasterCalculator
 import os
 import logging
 
@@ -19,6 +20,7 @@ ogr.RegisterAll()
 
 lcz_dir = os.getenv("LCZ_DIR")
 QGIS_PREFIX_PATH = os.environ.get("QGIS_PREFIX_PATH")
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
 QgsApplication.setPrefixPath(QGIS_PREFIX_PATH, True)
 app = QgsApplication([], False)
 app.initQgis()
@@ -26,7 +28,7 @@ from construct_qgis_functions import *
 
 logger.info("QGIS initialized")
 split_level_mapper = {
-    "natural": [0,10],
+    "natural": [10],
     "water": [16.1]
 }
 
@@ -45,7 +47,6 @@ def split_tiff(location_dir, file, split_type):
     try:
         driver = ogr.GetDriverByName("ESRI Shapefile")
         ds_path = os.path.join(location_dir, f"{split_type}_contour.shp")
-        logger.debug(f"ds_path: {ds_path}")
         if os.path.exists(ds_path):
             driver.DeleteDataSource(ds_path)
         ds = driver.CreateDataSource(ds_path)
@@ -78,21 +79,6 @@ def split_tiff(location_dir, file, split_type):
     
     return ds_path
 
-def delete_shapefile(shp_path):
-    shp_dir = os.path.dirname(shp_path)
-    shp_name = os.path.basename(shp_path).split('.')[0] + '.'
-    for file in os.listdir(shp_dir):
-        if file.startswith(shp_name):
-            os.remove(os.path.join(shp_dir, file))
-
-def rename_shapefile(shp_path, new_name):
-    shp_dir = os.path.dirname(shp_path)
-    shp_name = os.path.basename(shp_path).split('.')[0] + '.'
-    new_name = new_name + '.'
-    for file in os.listdir(shp_dir):
-        if file.startswith(shp_name):
-            os.rename(os.path.join(shp_dir, file), os.path.join(shp_dir, new_name))
-
 def delete_small_features(line_path):
     '''
     Use QGIS API to convert line into polygon, calc the area, and then record the id list to return
@@ -107,8 +93,7 @@ def delete_small_features(line_path):
 
     return filter_path
 
-def create_mask(location_dir, file_name, split_type):
-    logger.debug(f"creating mask for {file_name}")
+def create_contour_mask(location_dir, file_name, split_type):
     contour_path = split_tiff(location_dir, file_name, split_type)
     logger.debug(f"contour_path: {contour_path}")
     filter_path = delete_small_features(contour_path)
@@ -116,6 +101,47 @@ def create_mask(location_dir, file_name, split_type):
     proj_filter_path = reproject_shapefile(filter_path)
     logger.debug(f"proj_filter_path: {proj_filter_path}")
     return proj_filter_path
+
+def create_boundary_mask(location_dir, file_name, mask_value):
+    tif_location = os.path.join(location_dir, file_name)
+    rawtiff_layer = QgsRasterLayer(tif_location, "rawtiff_layer")
+    if not rawtiff_layer.isValid():
+        logger.error(f"rawtiff_layer is not valid")
+        return ""
+    
+    entry = QgsRasterCalculatorEntry()
+    entry.ref = 'rawtiff_layer@1'  # 引用名称
+    entry.raster = rawtiff_layer
+    entry.bandNumber = 1
+    entries = [entry]
+    output_path = os.path.join(location_dir, f"water_mask.tif")
+    expression = f'"rawtiff_layer@1" = {mask_value}'
+    calc = QgsRasterCalculator(expression, output_path, 'GTiff',
+                            rawtiff_layer.extent(), 
+                            rawtiff_layer.crs(),
+                            rawtiff_layer.width(), 
+                            rawtiff_layer.height(),
+                            entries,
+                            QgsProject.instance().transformContext()
+                            )
+    result = calc.processCalculation() 
+    if result != 0:
+        logger.error(f"error processing calculation: {result}")
+        return ""
+    logger.debug(f"tiff_path: {output_path}")
+    polygonize_path = raster_to_vector(output_path)
+    logger.debug(f"polygonize_path: {polygonize_path}")
+    selected_poly_path = extract_by_value(polygonize_path, "DN", "=", 1)
+    logger.debug(f"selected_poly_path: {selected_poly_path}")
+    proj_selected_poly_path = reproject_shapefile(selected_poly_path)
+    logger.debug(f"proj_selected_poly_path: {proj_selected_poly_path}")
+    buffer_path = create_buffer(proj_selected_poly_path, 50)
+    logger.debug(f"buffer_path: {buffer_path}")
+    proj_line_path = polygon_to_line(buffer_path)
+    logger.debug(f"proj_line_path: {proj_line_path}")
+    filter_path = delete_small_features(proj_line_path)
+    logger.debug(f"filter_path: {filter_path}")
+    return filter_path
 
 def filter_lcz_vectors(splited_road_path, feature_path):
     splited_road_centroid_path = calc_line_centroid(splited_road_path)
@@ -144,7 +170,14 @@ def mess_up_splited_feature(splited_path):
     layer.commitChanges()
     reindex_feature(splited_path,"FID")
 
-def exclude_bivertices(point_intersection_path, field_name):
+def exclude_edges(point_intersection_path, edge_type, field_name):
+    if (edge_type == "bial"):
+        compare_operator = False
+    elif (edge_type == "single"):
+        compare_operator = True
+    else:
+        logger.error("invalid operator signal")
+        return None
     layer = QgsVectorLayer(point_intersection_path, "point_intersection", "ogr")
     stack = []
     fid_index = layer.fields().indexOf(field_name)
@@ -154,8 +187,16 @@ def exclude_bivertices(point_intersection_path, field_name):
     last_fid = 0
     for feature in layer.getFeatures():
         fid = feature.attributes()[fid_index]
-        if (fid == last_fid):
-            stack.append(fid)
+        if (compare_operator == False):
+            if (last_fid == fid):
+                stack.append(fid)
+        else:
+            if (last_fid == 0):
+                stack.append(fid)
+            elif (last_fid == fid):
+                stack.pop()
+            else:
+                stack.append(fid)
         last_fid = fid
     return stack
 
@@ -217,36 +258,30 @@ def post_process_road(road_filepath, feature_path, intersection_with_feature_pat
     create_spatial_index(intersection_with_feature_path)
     point_intersection_path = extract_whithindistance(endpoint_path, intersection_with_feature_path, 2)
     logger.debug(f"point_intersection_path: {point_intersection_path}")
-    exclude_list = exclude_bivertices(point_intersection_path, "FID")
+    exclude_list = sorted(list(set(exclude_edges(point_intersection_path, "bial","FID")) | set(exclude_edges(endpoint_path, "single","FID"))))
+    logger.debug(f"calculated exclude_list")
     remained_road_path = calc_remained_road(splited_with_feature_path, exclude_list)
     logger.debug(f"remained_road_path: {remained_road_path}")
     delete_shapefile(dissolved_splited_road_path)
     delete_shapefile(splited_dissove_path)
-    delete_shapefile(endpoint_path)
+    #delete_shapefile(endpoint_path)
     return remained_road_path
 
-def merge_vector(road_filepath, feature_path):
-    layer_list = [road_filepath, feature_path]
+def merge_vector(layer_list):
     merged_path = merge_layers(layer_list, 32650)
     dissolved_path = dissolve_shapefile(merged_path)
     rename_shapefile(dissolved_path, "boundary")
     return merged_path
 
-def merge_shapefile(base_road_filepath, feature_path):
-    splited_road_path = split_lines(base_road_filepath, feature_path)
+def merge_shapefile(base_road_filepath, natural_path, water_path):
+    splited_road_path = split_lines(base_road_filepath, natural_path)
     logger.debug(f"splited_road_path: {splited_road_path}")
-    intersection_with_feature_path = calc_line_intersection(splited_road_path, feature_path)
+    intersection_with_feature_path = calc_line_intersection(splited_road_path, natural_path)
     logger.debug(f"intersection_with_feature_path: {intersection_with_feature_path}")
-    filtered_splited_road_path = filter_lcz_vectors(splited_road_path, feature_path)
-    processed_road_path = post_process_road(filtered_splited_road_path, feature_path, intersection_with_feature_path)
-    merged_vector_path = merge_vector(processed_road_path, feature_path)
+    filtered_splited_road_path = filter_lcz_vectors(splited_road_path, natural_path)
+    processed_road_path = post_process_road(filtered_splited_road_path, natural_path, intersection_with_feature_path)
+    merged_vector_path = merge_vector([processed_road_path, natural_path, water_path])
     return merged_vector_path
-
-def search_tif(location_dir):
-    for file in os.listdir(location_dir):
-        if file.endswith(".tif"):
-            return file
-    return None
 
 def __main__():
     app.initQgis()
@@ -255,14 +290,15 @@ def __main__():
         location_dir = os.path.join(lcz_dir, location)
         logger.info(f"processing {location}")
 
-        tif_path = search_tif(location_dir)
-        natural_path = create_mask(location_dir, tif_path, "natural")
-        logger.debug(f"natural_path: {natural_path}")
-        water_path = create_mask(location_dir, tif_path, "water")
+        tif_path = os.path.join(location_dir, location + ".tif")
+        #natural_path = create_contour_mask(location_dir, tif_path, "natural")
+        #logger.debug(f"natural_path: {natural_path}")
+        #water_path = create_contour_mask(location_dir, tif_path, "water")
+        water_path = create_boundary_mask(location_dir, tif_path, 17)
         logger.debug(f"water_path: {water_path}")
 
-        merge_shapefile(base_road_filepath, natural_path)
-        logger.info(f"{location} merged")
+        #merge_shapefile(base_road_filepath, natural_path, water_path)
+        #logger.info(f"{location} merged")
     app.exitQgis()
 
 if __name__ == "__main__":
