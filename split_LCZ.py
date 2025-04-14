@@ -287,7 +287,7 @@ def merge_vector(layer_list):
     rename_shapefile(dissolved_path, "boundary")
     return merged_path
 
-def merge_shapefile(base_road_filepath, natural_mask_path, natural_path, water_path):
+def merge_road(base_road_filepath, natural_mask_path, natural_path, water_path):
     splited_road_path = split_lines(base_road_filepath, natural_path)
     logger.debug(f"splited_road_path: {splited_road_path}")
     intersection_with_feature_path = calc_line_intersection(splited_road_path, natural_path)
@@ -299,14 +299,76 @@ def merge_shapefile(base_road_filepath, natural_mask_path, natural_path, water_p
     merged_vector_path = merge_vector([masked_road_path, natural_path, water_path])
     return merged_vector_path
 
-def simplify_shapefile(input_feature_path):
-    single_simplified_path = simplify_shapefile(input_feature_path, 10)
-    smoothed_path = smooth_shapefile(single_simplified_path, 0.4)
-    buffer_path = create_buffer(smoothed_path, 30)
-    multi_buffer_path = multipart_to_singleparts(buffer_path)
-    logger.debug(f"multi_buffer_path: {multi_buffer_path}")
-    skeleton_path = fetch_skeleton(multi_buffer_path)
-    return skeleton_path
+def simplify_road(input_feature_path):
+    smoothed_path = smooth_shapefile(input_feature_path, 0.4)
+    logger.debug(f"smoothed_path: {smoothed_path}")
+    single_simplified_path = simplify_shapefile(smoothed_path, 30)
+    logger.debug(f"simplified_path: {single_simplified_path}")
+    dissolved_single_simplified_path = dissolve_shapefile(single_simplified_path)
+    logger.debug(f"dissolved_simplified_path: {dissolved_single_simplified_path}")
+    exploded_single_simplified_path = explode_line(dissolved_single_simplified_path)
+    logger.debug(f"exploded_single_simplified_path: {exploded_single_simplified_path}")
+    vertices_path = all_vertices(exploded_single_simplified_path)
+    logger.debug(f"vertices_path: {vertices_path}")
+    create_spatial_index(vertices_path)
+    create_spatial_index(exploded_single_simplified_path)
+    shortest_line_path = shortest_line(vertices_path, exploded_single_simplified_path, 3, 80.0)
+    logger.debug(f"shortest_line_path: {shortest_line_path}")
+    merged_vector_path = merge_vector([shortest_line_path, exploded_single_simplified_path])
+    logger.debug(f"merged_vector_path: {merged_vector_path}")
+    dissolved_merged_vector_path = dissolve_shapefile(merged_vector_path)
+    return dissolved_merged_vector_path
+
+def adjust_road(road_feature_path):
+    polygonized_path = convert_line_to_polygon(road_feature_path)
+    reindex_feature(polygonized_path, "FID")
+    calc_area(polygonized_path)
+    logger.debug(f"calculated area")
+    create_spatial_index(polygonized_path)
+    polygon_layer = QgsVectorLayer(polygonized_path, "polygon_layer", "ogr")
+    polygon_index = QgsSpatialIndex(polygon_layer)
+    logger.debug(f"created layer's spatial index")
+    if not polygon_layer.isValid():
+        logger.error(f"polygon_layer is not valid")
+        return ""
+    request = QgsFeatureRequest().setFilterExpression("area < 100000")
+    merge_count = 0
+    for feature in polygon_layer.getFeatures(request):
+        bbox = feature.geometry().boundingBox()
+        bbox.grow(5)
+        candidates = polygon_index.intersects(bbox)
+        feature_geom = feature.geometry()
+        shared_edge_dict = {}
+        for candidate_fid in candidates:
+            if candidate_fid == feature.id():
+                continue
+            candidate = polygon_layer.getFeature(candidate_fid)
+            shared_edge = feature_geom.intersection(candidate.geometry())
+            if shared_edge.type() != QgsWkbTypes.LineGeometry:
+                logger.warning(f"{feature.id()}-{candidate_fid}'s shared_edge is not a line")
+                continue
+            if shared_edge.length() > 0:
+                shared_edge_dict[candidate_fid] = shared_edge.length()
+        # sort the shared_edge_dict by value to get the largest shared edge
+        sorted_shared_edge_dict = sorted(shared_edge_dict.items(), key=lambda x: x[1], reverse=True)
+        if len(sorted_shared_edge_dict) > 0:
+            with edit(polygon_layer):
+                largest_shared_edge_fid = sorted_shared_edge_dict[0][0]
+                largest_shared_edge_geom = polygon_layer.getFeature(largest_shared_edge_fid).geometry()
+                # merge the feature into the largest candidate
+                merged_geom = feature_geom.combine(largest_shared_edge_geom)
+                new_feature = QgsFeature()
+                new_feature.setGeometry(merged_geom)
+                new_feature['area'] = merged_geom.area()
+                polygon_layer.addFeature(new_feature)
+                polygon_layer.deleteFeature(feature.id())
+                merge_count += 1
+
+    reindex_feature(polygonized_path, "FID")
+    logger.info(f"merge_feature_count: {merge_count}")
+    logger.debug(f"polygonized_path: {polygonized_path}")
+    adjust_road_path = polygon_to_line(polygonized_path)
+    return adjust_road_path
 
 def __main__():
     app.initQgis()
@@ -316,21 +378,22 @@ def __main__():
         logger.info(f"processing {location}")
 
         tif_path = os.path.join(location_dir, location + ".tif")
-        natural_mask_path = create_image_mask(location_dir, tif_path, "natural")
-        buffered_natural_mask_path = create_boundary_mask(natural_mask_path, buffer_size = 50)
-        logger.info(f"buffered_natural_mask_path: {buffered_natural_mask_path}")
-        natural_path = create_contour_mask(location_dir, tif_path, "natural")
-        logger.info(f"natural_path: {natural_path}")
-        #water_path = create_contour_mask(location_dir, tif_path, "water")
-        water_mask_path = create_image_mask(location_dir, tif_path, "water")
-        logger.info(f"water_mask_path: {water_mask_path}")
-        water_path = create_boundary_mask(water_mask_path, buffer_size = 10)
-        logger.info(f"water_path: {water_path}")
+        #natural_mask_path = create_image_mask(location_dir, tif_path, "natural")
+        #buffered_natural_mask_path = create_boundary_mask(natural_mask_path, buffer_size = 50)
+        #logger.info(f"buffered_natural_mask_path: {buffered_natural_mask_path}")
+        #natural_path = create_contour_mask(location_dir, tif_path, "natural")
+        #logger.info(f"natural_path: {natural_path}")
+        #water_mask_path = create_image_mask(location_dir, tif_path, "water")
+        #logger.info(f"water_mask_path: {water_mask_path}")
+        #water_path = create_boundary_mask(water_mask_path, buffer_size = 10)
+        #logger.info(f"water_path: {water_path}")
 
-        merged_vector_path = merge_shapefile(base_road_filepath, buffered_natural_mask_path, natural_path, water_path)
-        logger.info(f"merged_vector_path: {merged_vector_path}")
-        simplified_merged_vector_path = simplify_shapefile(merged_vector_path)
+        #merged_vector_path = merge_road(base_road_filepath, buffered_natural_mask_path, natural_path, water_path)
+        #logger.info(f"merged_vector_path: {merged_vector_path}")
+        merged_vector_path = "/mnt/repo/YZB/TAZ/precise/LCZ/wuhan/natural_contour_f_p_roads_j_uni_d_s_s_selected_mask_m.shp"
+        simplified_merged_vector_path = simplify_road(merged_vector_path)
         logger.info(f"simplified_merged_vector_path: {simplified_merged_vector_path}")
+        #adjust_road_path = adjust_road(simplified_merged_vector_path)
     app.exitQgis()
 
 if __name__ == "__main__":

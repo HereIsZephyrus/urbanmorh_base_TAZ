@@ -37,7 +37,7 @@ def generate_save_path(origin_path, prefix = ""):
 def run_processing_algorithm(algorithm, params):
     result = processing.run(algorithm, params)
     if 'error' in result:
-        print(f"error running the processing {algorithm}: {result['error']}")
+        logger.error(f"error running the processing {algorithm}: {result['error']}")
         return False
     return True
 
@@ -52,8 +52,12 @@ def reindex_feature(feature_path, field_name):
     '''
     # add the field to the feature layer
     feature_layer = QgsVectorLayer(feature_path, 'Feature Layer', 'ogr')
-    feature_layer.dataProvider().addAttributes([construct_index_field(field_name)])
-    feature_layer.updateFields()
+    if not feature_layer.isValid():
+        logger.error(f"feature_layer is not valid")
+        return ""
+    if field_name not in feature_layer.fields():    
+        feature_layer.dataProvider().addAttributes([construct_index_field(field_name)])
+        feature_layer.updateFields()
     monoid_field_index = feature_layer.fields().indexOf(field_name)
     monoid_map = {
         f.id(): {monoid_field_index: f.id()}
@@ -107,11 +111,12 @@ def filter_remain_field(proj_poly_path, line_path, filter_path = ""):
     # iterate through the polygon layer and add the area attribute
     poly_layer = QgsVectorLayer(proj_poly_path, 'Multipolygon Layer', 'ogr')
     if not poly_layer.isValid():
-        print("Layer failed to load!")
+        logger.error("Layer failed to load!")
+        return ""
     line_layer = QgsVectorLayer(line_path, 'Line Layer', 'ogr')
     if not line_layer.isValid():
-        print("Line layer failed to load!")
-    
+        logger.error("Line layer failed to load!")
+        return ""
     line_layer.dataProvider().addAttributes([QgsField("remain", QMetaType.Type.Int)])
     line_layer.updateFields()
     remain_field = line_layer.fields().indexOf("remain")
@@ -575,8 +580,7 @@ def exclude_by_mask(input_feature_path, mask_path, output_feature_path = ""):
                 if line_geom.intersects(poly_feature.geometry()):
                     outside = False
                     break
-            
-            print(f"{line_feature.id()}: calc {len(intersecting_poly_ids)} that {outside}")
+            #print(f"{line_feature.id()}: calc {len(intersecting_poly_ids)} that {outside}")
             return (outside, line_feature) if outside else None
 
         # Use ThreadPoolExecutor for parallel processing
@@ -648,29 +652,109 @@ def smooth_shapefile(input_feature_path, offset, smoothed_path = ""):
         return ""
     return smoothed_path
 
-def fetch_skeleton(input_feature_path, skeleton_path = ""):
+def all_vertices(input_feature_path, vertices_path = ""):
     '''
-    Use QGIS API to fetch the skeleton of the input feature layer
+    Use QGIS API to extract all vertices of the input feature layer
     input_feature_path: the path of the input feature shapefile
-    skeleton_path: the path of the skeleton shapefile
+    vertices_path: the path of the vertices shapefile
+    if vertices_path is not provided, the vertices shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the vertices shapefile
     '''
-    if skeleton_path == "":
-        skeleton_path = generate_save_path(input_feature_path, "sk")
-    if os.path.exists(skeleton_path):
-        delete_shapefile(skeleton_path)
-    skeleton_params = {
-        'input':input_feature_path,
-        'smoothness':0.25,
-        'thin':-1,
-        '-a':False,'-s':True,'-l':True,'-t':False,
-        'output':skeleton_path,
-        'GRASS_REGION_PARAMETER':None,
-        'GRASS_SNAP_TOLERANCE_PARAMETER':-1,
-        'GRASS_MIN_AREA_PARAMETER':0.0001,
-        'GRASS_OUTPUT_TYPE_PARAMETER':2,
-        'GRASS_VECTOR_DSCO':'',
-        'GRASS_VECTOR_LCO':'',
-        'GRASS_VECTOR_EXPORT_NOCAT':False
+    if vertices_path == "":
+        vertices_path = generate_save_path(input_feature_path, "v")
+    if os.path.exists(vertices_path):
+        delete_shapefile(vertices_path)
+    params = {
+        'INPUT':input_feature_path,
+        'OUTPUT':vertices_path
     }
-    processing.run("grass:v.voronoi.skeleton", skeleton_params)
-    return skeleton_path
+    if not run_processing_algorithm("native:extractvertices", params):
+        return ""
+    return vertices_path
+
+def shortest_line(source_path, target_path, max_neighbor, max_distance, shortest_line_path = ""):
+    '''
+    Use QGIS API to calculate the shortest line between the source feature layer and the target feature layer
+    source_path: the path of the source feature shapefile
+    target_path: the path of the target feature shapefile
+    max_neighbor: the maximum number of neighbors
+    max_distance: the maximum distance of the shortest line
+    shortest_line_path: the path of the shortest line shapefile
+    if shortest_line_path is not provided, the shortest line shapefile will be saved in the same directory as the source feature shapefile
+    output: the path of the shortest line shapefile
+    '''
+    if shortest_line_path == "":
+        shortest_line_path = generate_save_path(source_path, "sl")
+    if os.path.exists(shortest_line_path):
+        delete_shapefile(shortest_line_path)
+    print(f"distance: {max_distance}")
+    print(f"neighbor: {max_neighbor}")
+    shortest_line_params = {
+        'DISTANCE':max_distance,
+        'DESTINATION':target_path,
+        'METHOD':0,
+        'NEIGHBORS':max_neighbor,
+        'OUTPUT':shortest_line_path,
+        'SOURCE':source_path,
+    }
+    if not run_processing_algorithm("native:shortestline", shortest_line_params):
+        return ""
+    return shortest_line_path
+
+def fix_geometry(input_feature_path, output_feature_path = ""):
+    '''
+    Use QGIS API to fix the geometry of the input feature layer
+    input_feature_path: the path of the input feature shapefile
+    output_feature_path: the path of the output feature shapefile
+    if output_feature_path is not provided, the output feature shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the output feature shapefile
+    '''
+    if output_feature_path == "":
+        output_feature_path = generate_save_path(input_feature_path, "f")
+    if os.path.exists(output_feature_path):
+        delete_shapefile(output_feature_path)
+    fix_geometry_params = {
+        'INPUT':input_feature_path,
+        'METHOD':0,
+        'OUTPUT':output_feature_path
+    }
+    if not run_processing_algorithm("native:fixgeometries", fix_geometry_params):
+        return ""
+    return output_feature_path
+
+def calc_area(feature_path):
+    feature_layer = QgsVectorLayer(feature_path, "feature_layer", "ogr")
+    if not feature_layer.isValid():
+        logger.error(f"feature_layer is not valid")
+        return ""
+    # promise "area" field exists
+    if not QgsField("area", QMetaType.Type.Double) in feature_layer.fields():
+        feature_layer.dataProvider().addAttributes([QgsField("area", QMetaType.Type.Double)])
+        feature_layer.updateFields()
+    area_field_index = feature_layer.fields().indexOf("area")
+    area_map = {
+        f.id(): {area_field_index: f.geometry().area()}
+        for f in feature_layer.getFeatures()
+    }
+    feature_layer.dataProvider().changeAttributeValues(area_map)
+    return feature_path
+
+def explode_line(input_feature_path, exploded_path = ""):
+    '''
+    Use QGIS API to explode the input feature layer
+    input_feature_path: the path of the input feature shapefile
+    exploded_path: the path of the exploded shapefile
+    if exploded_path is not provided, the exploded shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the exploded shapefile
+    '''
+    if exploded_path == "":
+        exploded_path = generate_save_path(input_feature_path, "e")
+    if os.path.exists(exploded_path):
+        delete_shapefile(exploded_path)
+    params = {
+        'INPUT':input_feature_path,
+        'OUTPUT':exploded_path
+    }
+    if not run_processing_algorithm("native:explodelines", params):
+        return ""
+    return exploded_path
