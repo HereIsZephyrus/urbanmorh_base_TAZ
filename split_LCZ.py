@@ -39,7 +39,7 @@ split_operand_mapper = {
 
 def copy_base_road():
     base_road_filepath = os.getenv("OSM_ROAD")
-    current_filepath = os.path.join(os.getcwd(), "result1.shp")
+    current_filepath = os.path.join(os.getcwd(), "road.shp")
     reproject_shapefile(base_road_filepath, current_filepath)
     return current_filepath
 
@@ -489,7 +489,6 @@ def sequence_mingle_road(polygon_layer, fields, request, area_threshold, minor_a
         
 def adjust_road(road_feature_path, TAZ_raster_path):    
     polygonized_path = direct_polygonize(road_feature_path)
-    centroid_path = calc_line_centroid(road_feature_path)
     logger.debug(f"polygonized_path: {polygonized_path}")
     reindex_feature(polygonized_path, "FID")
     calc_area(polygonized_path)
@@ -533,28 +532,32 @@ def adjust_road(road_feature_path, TAZ_raster_path):
 
 def __main__():
     app.initQgis()
-    base_road_filepath = copy_base_road()
+    total_base_road_filepath = copy_base_road()
     for location in os.listdir(lcz_dir):
         location_dir = os.path.join(lcz_dir, location)
         logger.info(f"processing {location}")
 
         tif_path = os.path.join(location_dir, location + ".tif")
-        #natural_mask_path = create_image_mask(location_dir, tif_path, "natural")
-        #buffered_natural_mask_path = create_boundary_mask(natural_mask_path, buffer_size = 50)
-        #logger.info(f"buffered_natural_mask_path: {buffered_natural_mask_path}")
-        #natural_path = create_contour_mask(location_dir, tif_path, "natural")
-        #logger.info(f"natural_path: {natural_path}")
-        #water_mask_path = create_image_mask(location_dir, tif_path, "water")
-        #logger.info(f"water_mask_path: {water_mask_path}")
-        #water_path = create_boundary_mask(water_mask_path, buffer_size = 10)
-        #logger.info(f"water_path: {water_path}")
+        boundary_city_path = os.path.join(location_dir, location + ".shp")
+        
+        base_road_filepath = clip_vector(total_base_road_filepath, boundary_city_path)
+        cliped_tif_path = clip_raster(tif_path, boundary_city_path)
+        
+        natural_mask_path = create_image_mask(location_dir, cliped_tif_path, "natural")
+        buffered_natural_mask_path = create_boundary_mask(natural_mask_path, buffer_size = 50)
+        logger.info(f"buffered_natural_mask_path: {buffered_natural_mask_path}")
+        natural_path = create_contour_mask(location_dir, cliped_tif_path, "natural")
+        logger.info(f"natural_path: {natural_path}")
+        water_mask_path = create_image_mask(location_dir, cliped_tif_path, "water")
+        logger.info(f"water_mask_path: {water_mask_path}")
+        water_path = create_boundary_mask(water_mask_path, buffer_size = 10)
+        logger.info(f"water_path: {water_path}")
 
-        #merged_vector_path = merge_road(base_road_filepath, buffered_natural_mask_path, natural_path, water_path)
-        #logger.info(f"merged_vector_path: {merged_vector_path}")
-        #simplified_merged_vector_path = simplify_road(merged_vector_path)
-        #logger.info(f"simplified_merged_vector_path: {simplified_merged_vector_path}")
-        simplify_merged_vector_path = "/mnt/repo/YZB/TAZ/precise/LCZ/wuhan/natural_contour_f_p_roads_j_uni_d_s_s_selected_mask_m_sm_sp_d_e_v_sl_m_f_d.shp"
-        adjust_road_path = adjust_road(simplify_merged_vector_path, tif_path)
+        merged_vector_path = merge_road(base_road_filepath, buffered_natural_mask_path, natural_path, water_path)
+        logger.info(f"merged_vector_path: {merged_vector_path}")
+        simplified_merged_vector_path = simplify_road(merged_vector_path)
+        logger.info(f"simplified_merged_vector_path: {simplified_merged_vector_path}")
+        adjust_road_path = adjust_road(simplified_merged_vector_path, cliped_tif_path)
     app.exitQgis()
 
 if __name__ == "__main__":

@@ -785,3 +785,53 @@ def sample_in_polygon(input_feature_path, point_inside_number, min_distance_insi
         'OUTPUT':output_feature_path
     }
     return run_processing_algorithm("native:randompointsinpolygons", params)
+
+def sample_raster_values(raster_path, sample_feature_path, output_feature_path = ""):
+    '''
+    Use QGIS API to sample the values of the input raster layer
+    raster_path: the path of the input raster shapefile
+    sample_feature_path: the path of the sample feature shapefile
+    output_feature_path: the path of the output feature shapefile
+    if output_feature_path is not provided, the output feature shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the output feature shapefile
+    '''
+    output_feature_path = generate_save_path(sample_feature_path, output_feature_path, "sample")
+    if os.path.exists(output_feature_path):
+        delete_shapefile(output_feature_path)
+    params = {
+        'INPUT':sample_feature_path,
+        'RASTERCOPY':raster_path,
+        'COLUMN_PREFIX':'SAMPLE_',
+        'OUTPUT':output_feature_path
+    }
+    return run_processing_algorithm("native:rastersampling", params)
+
+def clip_raster(raster_path, polygon_path, output_raster_path = ""):
+    '''
+    Use QGIS API to clip the input raster layer by the input polygon layer
+    raster_path: the path of the input raster shapefile
+    polygon_path: the path of the input polygon shapefile
+    '''
+    output_raster_path = generate_save_path(raster_path, output_raster_path, "clip")
+    params = {
+        'INPUT':raster_path,
+        'MASK':polygon_path,
+        'OUTPUT':output_raster_path
+    }
+    return run_processing_algorithm("gdal:cliprasterbymasklayer", params)
+
+def clip_vector(vector_path, polygon_path, output_vector_path = ""):
+    '''
+    Use QGIS API to clip the input vector layer by the input polygon layer
+    vector_path: the path of the input vector shapefile
+    polygon_path: the path of the input polygon shapefile
+    '''
+    output_vector_path = generate_save_path(vector_path, output_vector_path, "clip")
+    if os.path.exists(output_vector_path):
+        delete_shapefile(output_vector_path)
+    params = {
+        'INPUT':vector_path,
+        'OVERLAY':polygon_path,
+        'OUTPUT':output_vector_path
+    }
+    return run_processing_algorithm("native:clip", params)
