@@ -2,6 +2,7 @@ from osgeo import gdal, ogr, osr
 from dotenv import load_dotenv
 from qgis.core import *
 from qgis.analysis import QgsRasterCalculatorEntry, QgsRasterCalculator
+from rich.progress import Progress as ProgressBar
 import os
 import logging
 
@@ -283,9 +284,9 @@ def post_process_road(road_filepath, feature_path, intersection_with_feature_pat
 
 def merge_vector(layer_list):
     merged_path = merge_layers(layer_list, 32650)
-    dissolved_path = dissolve_shapefile(merged_path)
-    rename_shapefile(dissolved_path, "boundary")
-    return merged_path
+    fixed_merged_path = fix_geometry(merged_path)
+    dissolved_path = dissolve_shapefile(fixed_merged_path)
+    return dissolved_path
 
 def merge_road(base_road_filepath, natural_mask_path, natural_path, water_path):
     splited_road_path = split_lines(base_road_filepath, natural_path)
@@ -314,58 +315,161 @@ def simplify_road(input_feature_path):
     create_spatial_index(exploded_single_simplified_path)
     shortest_line_path = shortest_line(vertices_path, exploded_single_simplified_path, 3, 80.0)
     logger.debug(f"shortest_line_path: {shortest_line_path}")
+    exploded_single_simplified_path = "/mnt/repo/YZB/TAZ/precise/LCZ/wuhan/natural_contour_f_p_roads_j_uni_d_s_s_selected_mask_m_sm_sp_d_e.shp"
     merged_vector_path = merge_vector([shortest_line_path, exploded_single_simplified_path])
     logger.debug(f"merged_vector_path: {merged_vector_path}")
-    dissolved_merged_vector_path = dissolve_shapefile(merged_vector_path)
-    return dissolved_merged_vector_path
+    return merged_vector_path
 
-def adjust_road(road_feature_path):
-    polygonized_path = convert_line_to_polygon(road_feature_path)
-    reindex_feature(polygonized_path, "FID")
-    calc_area(polygonized_path)
-    logger.debug(f"calculated area")
-    create_spatial_index(polygonized_path)
-    polygon_layer = QgsVectorLayer(polygonized_path, "polygon_layer", "ogr")
-    polygon_index = QgsSpatialIndex(polygon_layer)
-    logger.debug(f"created layer's spatial index")
-    if not polygon_layer.isValid():
-        logger.error(f"polygon_layer is not valid")
-        return ""
-    request = QgsFeatureRequest().setFilterExpression("area < 100000")
-    merge_count = 0
-    for feature in polygon_layer.getFeatures(request):
-        bbox = feature.geometry().boundingBox()
-        bbox.grow(5)
-        candidates = polygon_index.intersects(bbox)
+def parallel_mingle_road(polygon_layer, fields, request, area_threshold, minor_area_threshold):
+    def merged_into_largest_edge(feature, polygon_index, area_threshold):
+        fid = feature.id()
         feature_geom = feature.geometry()
-        shared_edge_dict = {}
+        if feature_geom.area() > area_threshold:
+            return None
+        bbox = feature_geom.boundingBox()
+        bbox.grow(2)
+        candidates = polygon_index.intersects(bbox)
+        if len(candidates) == 0:
+            return None
+        largest_shared_edge_fid = 0
+        max_shared_edge_length = 0
         for candidate_fid in candidates:
             if candidate_fid == feature.id():
                 continue
             candidate = polygon_layer.getFeature(candidate_fid)
             shared_edge = feature_geom.intersection(candidate.geometry())
-            if shared_edge.type() != QgsWkbTypes.LineGeometry:
-                logger.warning(f"{feature.id()}-{candidate_fid}'s shared_edge is not a line")
+            if shared_edge.type() != QgsWkbTypes.LineGeometry or shared_edge.type() != QgsWkbTypes.MultiLineGeometry:
                 continue
-            if shared_edge.length() > 0:
-                shared_edge_dict[candidate_fid] = shared_edge.length()
-        # sort the shared_edge_dict by value to get the largest shared edge
-        sorted_shared_edge_dict = sorted(shared_edge_dict.items(), key=lambda x: x[1], reverse=True)
-        if len(sorted_shared_edge_dict) > 0:
+            if shared_edge.length() > max_shared_edge_length:
+                max_shared_edge_length = shared_edge.length()
+                largest_shared_edge_fid = candidate_fid
+        return tuple(fid, largest_shared_edge_fid)
+    
+    def update_feature(id_pair, polygon_layer, fields, monitor):
+        if id_pair is None:
+            return False
+        minor_feature_id, major_feature_id = id_pair
+        minor_feature = polygon_layer.getFeature(minor_feature_id)
+        major_feature = polygon_layer.getFeature(major_feature_id)
+        minor_geom = minor_feature.geometry()
+        major_geom = major_feature.geometry()
+        merged_geom = minor_geom.combine(major_geom)
+        new_feature = QgsFeature(fields)
+        new_feature.setGeometry(merged_geom)
+        new_feature['FID'] = major_feature_id
+        new_feature['area'] = minor_geom.area()
+        polygon_layer.addFeature(new_feature)
+        #polygon_layer.deleteFeature(minor_feature_id) lazy delete
+        monitor.update(task, advance=1, description=f"Adjusting roads ...")
+        return True
+    
+    adjusted_num = 0
+    polygon_index = QgsSpatialIndex(polygon_layer)
+    with ProgressBar() as monitor:
+        merge_func = partial(merged_into_largest_edge, polygon_index = polygon_index, area_threshold = area_threshold)
+        update_func = partial(update_feature, polygon_layer = polygon_layer, fields = fields, monitor = monitor)
+        task = monitor.add_task("Adjusting road", total=None)
+        polygon_index = QgsSpatialIndex(polygon_layer)
+        with edit(polygon_layer):
+            with ThreadPoolExecutor() as executor:
+                pairs = executor.map(merge_func, polygon_layer.getFeatures(request))
+                logger.debug(f"finish pair search")
+                results = executor.map(update_func, pairs)
+                logger.debug(f"finish feature add")
+                for result in results:
+                    if result:
+                        adjusted_num += 1
+    polygon_layer_path = polygon_layer.source()
+    aggregate_path = aggregate_features(polygon_layer_path, fields, request, area_threshold)
+    polygon_layer = QgsVectorLayer(aggregate_path, "polygon_layer", "ogr")
+    return adjusted_num
+
+def sequence_mingle_road(polygon_layer, fields, request, area_threshold, minor_area_threshold):
+    polygon_index = QgsSpatialIndex(polygon_layer)    
+    adjusted_num = 0
+    with ProgressBar() as monitor:
+        task = monitor.add_task("Adjusting road", total=100)
+        for feature in polygon_layer.getFeatures(request):
+            feature_geom = feature.geometry()
+            feature_area = feature_geom.area()
+            if feature_area > area_threshold:
+                continue
+            monitor.update(task, completed=feature_area / area_threshold * 100, description=f"Adjusting road {feature_area}")
+            bbox = feature_geom.boundingBox()
+            bbox.grow(2)
+            candidates = polygon_index.intersects(bbox)
+            if len(candidates) == 0:
+                continue
+            largest_shared_edge_fid = 0
+            max_shared_edge_length = 0
+            for candidate_fid in candidates:
+                if candidate_fid == feature.id():
+                    continue
+                candidate = polygon_layer.getFeature(candidate_fid)
+                shared_edge = feature_geom.intersection(candidate.geometry())
+                if (shared_edge.type() != QgsWkbTypes.LineGeometry or shared_edge.type() != QgsWkbTypes.MultiLineGeometry):
+                    logger.warning(f"{feature.id()}-{candidate_fid}'s shared_edge is not a line")
+                    continue
+                if shared_edge.length() > max_shared_edge_length:
+                    max_shared_edge_length = shared_edge.length()
+                    largest_shared_edge_fid = candidate_fid
+                    if feature_area < minor_area_threshold:
+                        break
+            if (largest_shared_edge_fid == 0):
+                continue
             with edit(polygon_layer):
-                largest_shared_edge_fid = sorted_shared_edge_dict[0][0]
-                largest_shared_edge_geom = polygon_layer.getFeature(largest_shared_edge_fid).geometry()
+                task.update(completed=feature_area / area_threshold * 100, description=f"Adjusting road {feature.id()} with {largest_shared_edge_fid}")
+                largest_shared_edge = polygon_layer.getFeature(largest_shared_edge_fid)
+                largest_shared_edge_geom = largest_shared_edge.geometry()
                 # merge the feature into the largest candidate
                 merged_geom = feature_geom.combine(largest_shared_edge_geom)
-                new_feature = QgsFeature()
+                new_feature = QgsFeature(fields)
                 new_feature.setGeometry(merged_geom)
+                new_feature['FID'] = largest_shared_edge.id()
                 new_feature['area'] = merged_geom.area()
                 polygon_layer.addFeature(new_feature)
                 polygon_layer.deleteFeature(feature.id())
-                merge_count += 1
-
+                adjusted_num += 1
+    return adjusted_num
+        
+def adjust_road(road_feature_path):    
+    polygonized_path = direct_polygonize(road_feature_path)
+    logger.debug(f"polygonized_path: {polygonized_path}")
     reindex_feature(polygonized_path, "FID")
-    logger.info(f"merge_feature_count: {merge_count}")
+    calc_area(polygonized_path)
+    logger.debug(f"calculated area")
+    create_spatial_index(polygonized_path)
+    logger.debug(f"created layer's spatial index")
+    sorted_polygonized_path = sort_features(polygonized_path, "area", True)
+    logger.debug(f"sorted_polygonized_path: {sorted_polygonized_path}")
+    polygon_layer = QgsVectorLayer(sorted_polygonized_path, "polygon_layer", "ogr")
+    fields = polygon_layer.fields()
+    request = QgsFeatureRequest().setFilterExpression(f"area < {area_threshold}")
+    if not polygon_layer.isValid():
+        logger.error(f"polygon_layer is not valid")
+        return ""
+    area_threshold = 50000
+    minor_area_threshold = 200
+    iteration = 0
+    while True:
+        iteration += 1
+        logger.debug(f"iteration {iteration}")
+        #adjusted_num = sequence_mingle_road(polygon_layer = polygon_layer, 
+        #                                    fields = fields, 
+        #                                    request = request, 
+        #                                    area_threshold = area_threshold, 
+        #                                    minor_area_threshold = minor_area_threshold)
+        adjusted_num = parallel_mingle_road(polygon_layer = polygon_layer, 
+                                            fields = fields, 
+                                            request = request, 
+                                            area_threshold = area_threshold, 
+                                            minor_area_threshold = minor_area_threshold)
+        if adjusted_num == 0:
+            logger.debug(f"no more adjustment")
+            break
+        logger.debug(f"adjusted_num: {adjusted_num}")
+        reindex_feature(polygonized_path, "FID")
+
     logger.debug(f"polygonized_path: {polygonized_path}")
     adjust_road_path = polygon_to_line(polygonized_path)
     return adjust_road_path
@@ -390,10 +494,10 @@ def __main__():
 
         #merged_vector_path = merge_road(base_road_filepath, buffered_natural_mask_path, natural_path, water_path)
         #logger.info(f"merged_vector_path: {merged_vector_path}")
-        merged_vector_path = "/mnt/repo/YZB/TAZ/precise/LCZ/wuhan/natural_contour_f_p_roads_j_uni_d_s_s_selected_mask_m.shp"
-        simplified_merged_vector_path = simplify_road(merged_vector_path)
-        logger.info(f"simplified_merged_vector_path: {simplified_merged_vector_path}")
-        #adjust_road_path = adjust_road(simplified_merged_vector_path)
+        #simplified_merged_vector_path = simplify_road(merged_vector_path)
+        #logger.info(f"simplified_merged_vector_path: {simplified_merged_vector_path}")
+        simplify_merged_vector_path = "/mnt/repo/YZB/TAZ/precise/LCZ/wuhan/natural_contour_f_p_roads_j_uni_d_s_s_selected_mask_m_sm_sp_d_e_v_sl_m_f_d.shp"
+        adjust_road_path = adjust_road(simplify_merged_vector_path)
     app.exitQgis()
 
 if __name__ == "__main__":

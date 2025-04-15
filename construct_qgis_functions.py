@@ -5,6 +5,8 @@ from processing.core.Processing import Processing
 Processing.initialize()
 import os
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 
 def delete_shapefile(shp_path):
@@ -55,7 +57,8 @@ def reindex_feature(feature_path, field_name):
     if not feature_layer.isValid():
         logger.error(f"feature_layer is not valid")
         return ""
-    if field_name not in feature_layer.fields():    
+    if field_name not in [f.name() for f in feature_layer.fields()]:
+        print(f"field_name: {field_name} + {feature_layer.fields()}")
         feature_layer.dataProvider().addAttributes([construct_index_field(field_name)])
         feature_layer.updateFields()
     monoid_field_index = feature_layer.fields().indexOf(field_name)
@@ -568,9 +571,6 @@ def exclude_by_mask(input_feature_path, mask_path, output_feature_path = ""):
 
     with edit(result_layer):
         # parallel the search
-        from concurrent.futures import ThreadPoolExecutor
-        from functools import partial
-
         def process_line_feature(line_feature, polygon_layer, polygon_index):
             line_geom = line_feature.geometry()
             intersecting_poly_ids = polygon_index.intersects(line_geom.boundingBox())
@@ -687,8 +687,6 @@ def shortest_line(source_path, target_path, max_neighbor, max_distance, shortest
         shortest_line_path = generate_save_path(source_path, "sl")
     if os.path.exists(shortest_line_path):
         delete_shapefile(shortest_line_path)
-    print(f"distance: {max_distance}")
-    print(f"neighbor: {max_neighbor}")
     shortest_line_params = {
         'DISTANCE':max_distance,
         'DESTINATION':target_path,
@@ -728,8 +726,14 @@ def calc_area(feature_path):
         logger.error(f"feature_layer is not valid")
         return ""
     # promise "area" field exists
-    if not QgsField("area", QMetaType.Type.Double) in feature_layer.fields():
-        feature_layer.dataProvider().addAttributes([QgsField("area", QMetaType.Type.Double)])
+    if not "area" in [f.name() for f in feature_layer.fields()]:
+        area_field = QgsField(
+            name="area",
+            type=QMetaType.Type.Double,
+            len=20,
+            prec=10,
+        )
+        feature_layer.dataProvider().addAttributes([area_field])
         feature_layer.updateFields()
     area_field_index = feature_layer.fields().indexOf("area")
     area_map = {
@@ -758,3 +762,68 @@ def explode_line(input_feature_path, exploded_path = ""):
     if not run_processing_algorithm("native:explodelines", params):
         return ""
     return exploded_path
+
+def direct_polygonize(raster_path, vector_path = ""):
+    '''
+    Use QGIS API to polygonize the input raster layer
+    raster_path: the path of the input raster shapefile
+    vector_path: the path of the output vector shapefile
+    '''
+    if vector_path == "":
+        vector_path = generate_save_path(raster_path, "dp")
+    if os.path.exists(vector_path):
+        delete_shapefile(vector_path)
+    params = {
+        'INPUT':raster_path,
+        'KEEP_FIELDS':False,
+        'OUTPUT':vector_path
+    }
+    processing.run("native:polygonize", params)
+    return vector_path
+
+def sort_features(feature_path, field_name, ascending = True, output_feature_path = ""):
+    '''
+    Use QGIS API to sort the input feature layer by the field
+    feature_path: the path of the input feature shapefile
+    field_name: the name of the field to sort
+    ascending: the order of the sorting
+    '''
+    if output_feature_path == "":
+        output_feature_path = generate_save_path(feature_path, "sorted")
+    if os.path.exists(output_feature_path):
+        delete_shapefile(output_feature_path)
+    expression = f'"{field_name}"'
+    params = {
+        'INPUT':feature_path,
+        'EXPRESSION':expression,
+        'ASCENDING':ascending,
+        'NULLS_FIRST':True,
+        'OUTPUT':output_feature_path
+    }
+    processing.run("native:orderbyexpression", params)
+    return output_feature_path
+
+def aggregate_features(feature_path, field_name, output_feature_path = ""):
+    '''
+    Use QGIS API to aggregate the input feature layer by the field
+    feature_path: the path of the input feature shapefile
+    field_name: the name of the field to aggregate
+    output_feature_path: the path of the output feature shapefile
+    if output_feature_path is not provided, the output feature shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the output feature shapefile
+    '''
+    if output_feature_path == "":
+        output_feature_path = generate_save_path(feature_path, "aggregated")
+    if os.path.exists(output_feature_path):
+        delete_shapefile(output_feature_path)
+    params = {
+        'INPUT':feature_path,
+        'GROUP_BY':f'{field_name}',
+        'AGGREGATES':[
+            {'aggregate': 'first_value','delimiter': ',','input': '"FID"','length': 11,'name': 'FID','precision': 0,'sub_type': 0,'type': 4,'type_name': 'int8'},
+            {'aggregate': 'sum','delimiter': ',','input': '"area"','length': 20,'name': 'area','precision': 10,'sub_type': 0,'type': 6,'type_name': 'double precision'}],
+        'OUTPUT':output_feature_path
+    }
+    if not run_processing_algorithm("native:aggregate", params):
+        return ""
+    return output_feature_path
