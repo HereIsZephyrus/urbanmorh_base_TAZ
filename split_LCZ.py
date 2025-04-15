@@ -320,19 +320,25 @@ def simplify_road(input_feature_path):
     logger.debug(f"merged_vector_path: {merged_vector_path}")
     return merged_vector_path
 
-def parallel_mingle_road(polygon_layer, fields, request, area_threshold, minor_area_threshold):
-    def merged_into_largest_edge(feature, polygon_index, area_threshold):
+def parallel_mingle_road(polygon_layer, fields, request, area_threshold, minor_area_threshold, TAZ_raster_path):
+    def merged_into_closest_neighbor(feature, polygon_index, area_threshold, minor_area_threshold):
         fid = feature.id()
         feature_geom = feature.geometry()
-        if feature_geom.area() > area_threshold:
+        feature_area = feature_geom.area()
+        sample_field_index = fields.indexOf("SAMPLE")
+        sample_value = feature.attributes()[sample_field_index]
+        if sample_value == 0:
+            logger.warning(f"feature {fid} has no sample value")
+            return None
+        if feature_area > area_threshold:
             return None
         bbox = feature_geom.boundingBox()
         bbox.grow(2)
         candidates = polygon_index.intersects(bbox)
         if len(candidates) == 0:
             return None
-        largest_shared_edge_fid = 0
-        max_shared_edge_length = 0
+        closest_neighbor_fid = 0
+        min_distance = 0
         for candidate_fid in candidates:
             if candidate_fid == feature.id():
                 continue
@@ -340,10 +346,16 @@ def parallel_mingle_road(polygon_layer, fields, request, area_threshold, minor_a
             shared_edge = feature_geom.intersection(candidate.geometry())
             if shared_edge.type() != QgsWkbTypes.LineGeometry or shared_edge.type() != QgsWkbTypes.MultiLineGeometry:
                 continue
-            if shared_edge.length() > max_shared_edge_length:
-                max_shared_edge_length = shared_edge.length()
-                largest_shared_edge_fid = candidate_fid
-        return tuple(fid, largest_shared_edge_fid)
+            candidate_sample_value = candidate.attributes()[sample_field_index]
+            if candidate_sample_value == 0:
+                continue
+            sample_distance = abs(sample_value - candidate_sample_value)
+            if sample_distance < min_distance:
+                min_distance = sample_distance
+                closest_neighbor_fid = candidate_fid
+                if feature_area < minor_area_threshold:
+                    break
+        return tuple(fid, closest_neighbor_fid)
     
     def update_feature(id_pair, polygon_layer, fields, monitor):
         if id_pair is None:
@@ -362,26 +374,69 @@ def parallel_mingle_road(polygon_layer, fields, request, area_threshold, minor_a
         #polygon_layer.deleteFeature(minor_feature_id) lazy delete
         monitor.update(task, advance=1, description=f"Adjusting roads ...")
         return True
-    
-    adjusted_num = 0
+
+    #calculate the sample number on the polygon layer
     polygon_index = QgsSpatialIndex(polygon_layer)
+    sample_in_polygon_layer = sample_in_polygon(polygon_layer, point_inside_number=10, min_distance_inside=200, seed=None)
+    logger.debug(f"sampled in polygon layer")
+    sample_on_LCZ_layer = sample_raster_values(TAZ_raster_path, sample_in_polygon_layer, None)
+    logger.debug(f"sampled on LCZ layer")
+    result = processing.run("native:aggregate", {'INPUT':sample_on_LCZ_layer,
+        'GROUP_BY':'"FID"',
+        'AGGREGATES':[{'aggregate': 'first_value','delimiter': ',','input': '"FID"','length': 11,'name': 'FID','precision': 0,'sub_type': 0,'type': 4,'type_name': 'int8'},
+        {'aggregate': 'first_value','delimiter': ',','input': '"area"','length': 20,'name': 'area','precision': 10,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+        {'aggregate': 'mean','delimiter': ',','input': '"SAMPLE_1"','length': 5,'name': 'SAMPLE','precision': 2,'sub_type': 0,'type': 6,'type_name': 'double precision'}],
+        'OUTPUT':'TEMPORARY_OUTPUT'
+    })
+    if 'error' in result:
+        logger.error(f"error in aggregate: {result['error']}")
+        return 0
+    aggregateed_sample_layer = result['OUTPUT']
+    logger.debug(f"aggregated sample layer")
+    result = processing.run("native:joinattributestable", {
+        'INPUT':aggregateed_sample_layer,'FIELD':'FID','INPUT_2':aggregateed_sample_layer,
+        'FIELD_2':'FID','FIELDS_TO_COPY':['SAMPLE'],'METHOD':1,'DISCARD_NONMATCHING':False,'PREFIX':'',
+        'OUTPUT':'TEMPORARY_OUTPUT'
+    })
+    if 'error' in result:
+        logger.error(f"error in join attribute table: {result['error']}")
+        return 0
+    joined_polygon_layer = result['OUTPUT']
+    logger.debug(f"joined sample value into polygon layer")
+
+    adjusted_num = 0
     with ProgressBar() as monitor:
-        merge_func = partial(merged_into_largest_edge, polygon_index = polygon_index, area_threshold = area_threshold)
-        update_func = partial(update_feature, polygon_layer = polygon_layer, fields = fields, monitor = monitor)
+        merge_func = partial(merged_into_closest_neighbor, polygon_index = polygon_index, area_threshold = area_threshold, minor_area_threshold = minor_area_threshold)
+        update_func = partial(update_feature, polygon_layer = joined_polygon_layer, fields = fields, monitor = monitor)
         task = monitor.add_task("Adjusting road", total=None)
-        polygon_index = QgsSpatialIndex(polygon_layer)
-        with edit(polygon_layer):
+        polygon_index = QgsSpatialIndex(joined_polygon_layer)
+        with edit(joined_polygon_layer):
             with ThreadPoolExecutor() as executor:
-                pairs = executor.map(merge_func, polygon_layer.getFeatures(request))
+                pairs = executor.map(merge_func, joined_polygon_layer.getFeatures(request))
                 logger.debug(f"finish pair search")
                 results = executor.map(update_func, pairs)
                 logger.debug(f"finish feature add")
                 for result in results:
                     if result:
                         adjusted_num += 1
-    polygon_layer_path = polygon_layer.source()
-    aggregate_path = aggregate_features(polygon_layer_path, fields, request, area_threshold)
-    polygon_layer = QgsVectorLayer(aggregate_path, "polygon_layer", "ogr")
+    polygon_layer_path = joined_polygon_layer.source()
+    aggregate_layer = aggregate_features(polygon_layer_path, 'FID', None)
+    delete_shapefile(polygon_layer_path)
+
+    options = QgsVectorFileWriter.SaveVectorOptions()
+    options.driverName = "ESRI Shapefile"
+    options.fileEncoding = "utf-8"
+    error = QgsVectorFileWriter.writeAsVectorFormatV3(
+        aggregate_layer,
+        polygon_layer_path,
+        QgsProject.instance().transformContext(),
+        options,
+    )
+    if (error[0] != 0):
+        logger.error(f"error writing output layer: {error}")
+        return ""
+    polygon_layer.reload()
+    logger.debug("reloaded polygon layer")
     return adjusted_num
 
 def sequence_mingle_road(polygon_layer, fields, request, area_threshold, minor_area_threshold):
@@ -432,8 +487,9 @@ def sequence_mingle_road(polygon_layer, fields, request, area_threshold, minor_a
                 adjusted_num += 1
     return adjusted_num
         
-def adjust_road(road_feature_path):    
+def adjust_road(road_feature_path, TAZ_raster_path):    
     polygonized_path = direct_polygonize(road_feature_path)
+    centroid_path = calc_line_centroid(road_feature_path)
     logger.debug(f"polygonized_path: {polygonized_path}")
     reindex_feature(polygonized_path, "FID")
     calc_area(polygonized_path)
@@ -463,7 +519,8 @@ def adjust_road(road_feature_path):
                                             fields = fields, 
                                             request = request, 
                                             area_threshold = area_threshold, 
-                                            minor_area_threshold = minor_area_threshold)
+                                            minor_area_threshold = minor_area_threshold,
+                                            TAZ_raster_path = TAZ_raster_path)
         if adjusted_num == 0:
             logger.debug(f"no more adjustment")
             break
@@ -497,7 +554,7 @@ def __main__():
         #simplified_merged_vector_path = simplify_road(merged_vector_path)
         #logger.info(f"simplified_merged_vector_path: {simplified_merged_vector_path}")
         simplify_merged_vector_path = "/mnt/repo/YZB/TAZ/precise/LCZ/wuhan/natural_contour_f_p_roads_j_uni_d_s_s_selected_mask_m_sm_sp_d_e_v_sl_m_f_d.shp"
-        adjust_road_path = adjust_road(simplify_merged_vector_path)
+        adjust_road_path = adjust_road(simplify_merged_vector_path, tif_path)
     app.exitQgis()
 
 if __name__ == "__main__":

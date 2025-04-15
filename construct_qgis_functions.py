@@ -30,18 +30,24 @@ def delete_shapefile(shp_path):
     for file in os.listdir(shp_dir):
         if file.startswith(shp_name):
             os.remove(os.path.join(shp_dir, file))
-def generate_save_path(origin_path, prefix = ""):
-    dir = os.path.dirname(origin_path)
-    name = os.path.basename(origin_path).split('.')[0]
-    new_path = os.path.join(dir, f'{name}_{prefix}.shp')
-    return new_path
+
+def generate_save_path(origin_path, output_path, prefix = ""):
+    if output_path is None:
+        return 'TEMPORARY_OUTPUT'
+    if output_path == "":
+        dir = os.path.dirname(origin_path)
+        name = os.path.basename(origin_path).split('.')[0]
+        new_path = os.path.join(dir, f'{name}_{prefix}.shp')
+        return new_path
+    else:
+        return output_path
 
 def run_processing_algorithm(algorithm, params):
     result = processing.run(algorithm, params)
     if 'error' in result:
         logger.error(f"error running the processing {algorithm}: {result['error']}")
-        return False
-    return True
+        return ""
+    return result['OUTPUT']
 
 def construct_index_field(field_name):
     return QgsField(field_name, QMetaType.Type.Int)
@@ -77,8 +83,7 @@ def reproject_shapefile(geo_shp_path,proj_shp_path = ""):
     if proj_shp_path is not provided, the projected shapefile will be saved in the same directory as the original shapefile
     output: the path of the projected shapefile
     '''
-    if proj_shp_path == "":
-        proj_shp_path = generate_save_path(geo_shp_path, "p")
+    proj_shp_path = generate_save_path(geo_shp_path, proj_shp_path, "p")
     if os.path.exists(proj_shp_path):
         delete_shapefile(proj_shp_path)
     crs_params = {
@@ -107,8 +112,7 @@ def filter_remain_field(proj_poly_path, line_path, filter_path = ""):
         else:
             return 0
 
-    if filter_path == "":
-        filter_path = generate_save_path(line_path, "f")
+    filter_path = generate_save_path(line_path, filter_path, "f")
     if os.path.exists(filter_path):
         delete_shapefile(filter_path)
     # iterate through the polygon layer and add the area attribute
@@ -147,8 +151,7 @@ def convert_line_to_polygon(line_path, poly_path = ""):
     if poly_path is not provided, the polygon shapefile will be saved in the same directory as the line shapefile
     output: the path of the polygon shapefile
     '''
-    if poly_path == "":
-        poly_path = generate_save_path(line_path, "poly")
+    poly_path = generate_save_path(line_path, poly_path, "poly")
     if os.path.exists(poly_path):
         delete_shapefile(poly_path)
     convert_params = {
@@ -168,8 +171,7 @@ def split_lines(base_road_filepath, feature_path, splited_road_path = ""):
     if splited_road_path is not provided, the splited road shapefile will be saved in the same directory as the feature shapefile
     output: the path of the splited road shapefile
     '''
-    if splited_road_path == "":
-        splited_road_path = generate_save_path(feature_path, "roads")
+    splited_road_path = generate_save_path(feature_path, splited_road_path, "roads")
     if os.path.exists(splited_road_path):
         delete_shapefile(splited_road_path)
     merge_params = {
@@ -191,8 +193,7 @@ def calc_line_centroid(line_path, centroid_path = ""):
     if centroid_path is not provided, the centroid shapefile will be saved in the same directory as the line shapefile
     output: the path of the centroid shapefile
     '''
-    if centroid_path == "":
-        centroid_path = generate_save_path(line_path, "c")
+    centroid_path = generate_save_path(line_path, centroid_path, "c")
     if os.path.exists(centroid_path):
         delete_shapefile(centroid_path)
     calc_params = {
@@ -221,8 +222,7 @@ def join_by_attribute(input_feature_path, add_feature_path, join_path = ""):
     if join_path is not provided, the joined shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the joined shapefile
     '''
-    if join_path == "":
-        join_path = generate_save_path(input_feature_path, "j")
+    join_path = generate_save_path(input_feature_path, join_path, "j")
     if os.path.exists(join_path):
         delete_shapefile(join_path)
     join_params = {
@@ -236,9 +236,7 @@ def join_by_attribute(input_feature_path, add_feature_path, join_path = ""):
         'OUTPUT' : join_path,
         'PREFIX' : '' 
     }
-    if not run_processing_algorithm("native:joinattributestable", join_params):
-        return ""
-    return join_path
+    return run_processing_algorithm("native:joinattributestable", join_params)
 
 
 def extract_nonull_attribute(input_feature_path, field_name, extracted_path = ""):
@@ -250,8 +248,7 @@ def extract_nonull_attribute(input_feature_path, field_name, extracted_path = ""
     if extracted_path is not provided, the extracted shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the extracted shapefile
     '''
-    if extracted_path == "":
-        extracted_path = generate_save_path(input_feature_path, "uni")
+    extracted_path = generate_save_path(input_feature_path, extracted_path, "uni")
     if os.path.exists(extracted_path):
         delete_shapefile(extracted_path)
     extract_params = {
@@ -261,9 +258,7 @@ def extract_nonull_attribute(input_feature_path, field_name, extracted_path = ""
         'OUTPUT' : extracted_path,
         'VALUE' : ''
     }
-    if not run_processing_algorithm("native:extractbyattribute", extract_params):
-        return ""
-    return extracted_path
+    return run_processing_algorithm("native:extractbyattribute", extract_params)
 
 def extract_by_value(input_feature_path, field_name, operator, value, extracted_path = ""):
     '''
@@ -276,6 +271,7 @@ def extract_by_value(input_feature_path, field_name, operator, value, extracted_
     if extracted_path is not provided, the extracted shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the extracted shapefile
     '''
+    extracted_path = generate_save_path(input_feature_path, extracted_path, "flt")
     if operator == "=":
         operator = 0
     elif operator == "!=":
@@ -288,8 +284,6 @@ def extract_by_value(input_feature_path, field_name, operator, value, extracted_
         operator = 4
     elif operator == "<=":
         operator = 5
-    if extracted_path == "":
-        extracted_path = generate_save_path(input_feature_path, "flt")
     if os.path.exists(extracted_path):
         delete_shapefile(extracted_path)
     extract_params = {
@@ -299,9 +293,7 @@ def extract_by_value(input_feature_path, field_name, operator, value, extracted_
         'OUTPUT' : extracted_path,
         'VALUE' : value
     }
-    if not run_processing_algorithm("native:extractbyattribute", extract_params):
-        return ""
-    return extracted_path
+    return run_processing_algorithm("native:extractbyattribute", extract_params)
 
 def extract_whithindistance(input_feature_path, compare_feature_path, distance, distance_extracted_path = ""):
     '''
@@ -312,8 +304,7 @@ def extract_whithindistance(input_feature_path, compare_feature_path, distance, 
     if distance_extracted_path is not provided, the distance extracted shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the distance extracted shapefile
     '''
-    if distance_extracted_path == "":
-        distance_extracted_path = generate_save_path(input_feature_path, "distance")
+    distance_extracted_path = generate_save_path(input_feature_path, distance_extracted_path, "distance")
     if os.path.exists(distance_extracted_path):
         delete_shapefile(distance_extracted_path)
     extract_params = {
@@ -324,9 +315,7 @@ def extract_whithindistance(input_feature_path, compare_feature_path, distance, 
     }
     create_spatial_index(input_feature_path)
     create_spatial_index(compare_feature_path)
-    if not run_processing_algorithm("native:extractwithindistance", extract_params):
-        return ""
-    return distance_extracted_path
+    return run_processing_algorithm("native:extractwithindistance", extract_params)
 
 def dissolve_shapefile(input_feature_path, dissolved_path = ""):
     '''
@@ -336,8 +325,7 @@ def dissolve_shapefile(input_feature_path, dissolved_path = ""):
     if dissolved_path is not provided, the dissolved shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the dissolved shapefile
     '''
-    if dissolved_path == "":
-        dissolved_path = generate_save_path(input_feature_path, "d")
+    dissolved_path = generate_save_path(input_feature_path, dissolved_path, "d")
     if os.path.exists(dissolved_path):
         delete_shapefile(dissolved_path)
     dissolve_params = {
@@ -346,9 +334,7 @@ def dissolve_shapefile(input_feature_path, dissolved_path = ""):
         'OUTPUT' : dissolved_path,
         'SEPARATE_DISJOINT' : False
     }
-    if not run_processing_algorithm("native:dissolve", dissolve_params):
-        return ""
-    return dissolved_path
+    return run_processing_algorithm("native:dissolve", dissolve_params)
 
 def split_line_with_line(line_path, overlap_line_path, splited_line_path = ""):
     '''
@@ -358,8 +344,7 @@ def split_line_with_line(line_path, overlap_line_path, splited_line_path = ""):
     if splited_line_path is not provided, the splited line shapefile will be saved in the same directory as the line shapefile
     output: the path of the splited line shapefile
     '''
-    if splited_line_path == "":
-        splited_line_path = generate_save_path(line_path, "s")
+    splited_line_path = generate_save_path(line_path, splited_line_path, "s")
     if os.path.exists(splited_line_path):
         delete_shapefile(splited_line_path)
     split_params = { 
@@ -367,9 +352,7 @@ def split_line_with_line(line_path, overlap_line_path, splited_line_path = ""):
         'LINES' : overlap_line_path, 
         'OUTPUT' : splited_line_path
     }
-    if not run_processing_algorithm("native:splitwithlines", split_params):
-        return ""
-    return splited_line_path
+    return run_processing_algorithm("native:splitwithlines", split_params)
 
 def specific_vertices(input_feature_path, specific_vertices_path = ""):
     '''
@@ -378,8 +361,7 @@ def specific_vertices(input_feature_path, specific_vertices_path = ""):
     if specific_vertices_path is not provided, the specific vertices shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the specific vertices shapefile
     '''
-    if specific_vertices_path == "":
-        specific_vertices_path = generate_save_path(input_feature_path, "v")
+    specific_vertices_path = generate_save_path(input_feature_path, specific_vertices_path, "v")
     if os.path.exists(specific_vertices_path):
         delete_shapefile(specific_vertices_path)
     vertice_calc_params = {
@@ -387,9 +369,7 @@ def specific_vertices(input_feature_path, specific_vertices_path = ""):
         'VERTICES' : '0, -1',
         'OUTPUT' : specific_vertices_path
     }
-    if not run_processing_algorithm("native:extractspecificvertices", vertice_calc_params):
-        return ""
-    return specific_vertices_path
+    return run_processing_algorithm("native:extractspecificvertices", vertice_calc_params)
 
 def calc_intersection(input_feature_path, compare_feature_path, grid_size = 0.01, intersection_path = ""):
     '''
@@ -400,8 +380,7 @@ def calc_intersection(input_feature_path, compare_feature_path, grid_size = 0.01
     if intersection_path is not provided, the intersection shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the intersection shapefile
     '''
-    if intersection_path == "":
-        intersection_path = generate_save_path(input_feature_path, "intersection")
+    intersection_path = generate_save_path(input_feature_path, intersection_path, "intersection")
     if os.path.exists(intersection_path):
         delete_shapefile(intersection_path)
     intersection_params = {
@@ -413,9 +392,7 @@ def calc_intersection(input_feature_path, compare_feature_path, grid_size = 0.01
         'OUTPUT' : intersection_path,
         'GRID_SIZE' : grid_size
     }
-    if not run_processing_algorithm("native:intersection", intersection_params):
-        return ""
-    return intersection_path
+    return run_processing_algorithm("native:intersection", intersection_params)
 
 def calc_line_intersection(input_feature_path, compare_feature_path, intersection_path = ""):
     '''
@@ -425,8 +402,7 @@ def calc_line_intersection(input_feature_path, compare_feature_path, intersectio
     if intersection_path is not provided, the intersection shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the intersection shapefile
     '''
-    if intersection_path == "":
-        intersection_path = generate_save_path(input_feature_path, "int")
+    intersection_path = generate_save_path(input_feature_path, intersection_path, "int")
     if os.path.exists(intersection_path):
         delete_shapefile(intersection_path)
     intersection_params = {
@@ -437,9 +413,7 @@ def calc_line_intersection(input_feature_path, compare_feature_path, intersectio
         'INTERSECT_FIELDS_PREFIX' : '',
         'OUTPUT' : intersection_path
     }
-    if not run_processing_algorithm("native:lineintersections", intersection_params):
-        return ""
-    return intersection_path
+    return run_processing_algorithm("native:lineintersections", intersection_params)
 
 def merge_layers(layer_list, EPSG_code, merged_path = ""):
     '''
@@ -448,8 +422,7 @@ def merge_layers(layer_list, EPSG_code, merged_path = ""):
     EPSG_code: the EPSG code of the merged shapefile
     merged_path: the path of the merged shapefile
     '''
-    if merged_path == "":
-        merged_path = generate_save_path(layer_list[0], "m")
+    merged_path = generate_save_path(layer_list[0], merged_path, "m")
     if os.path.exists(merged_path):
         delete_shapefile(merged_path)
     merge_params = {
@@ -457,9 +430,7 @@ def merge_layers(layer_list, EPSG_code, merged_path = ""):
         'CRS' : QgsCoordinateReferenceSystem(f'EPSG:{EPSG_code}'),
         'OUTPUT' : merged_path
     }
-    if not run_processing_algorithm("native:mergevectorlayers", merge_params):
-        return ""
-    return merged_path
+    return run_processing_algorithm("native:mergevectorlayers", merge_params)
 
 def raster_to_vector(raster_path, vector_path = ""):
     '''
@@ -469,8 +440,7 @@ def raster_to_vector(raster_path, vector_path = ""):
     if vector_path is not provided, the vector shapefile will be saved in the same directory as the raster shapefile
     output: the path of the vector shapefile
     '''
-    if vector_path == "":
-        vector_path = generate_save_path(raster_path, "r2v")
+    vector_path = generate_save_path(raster_path, vector_path, "r2v")
     if os.path.exists(vector_path):
         delete_shapefile(vector_path)
     convert_params = {
@@ -481,9 +451,7 @@ def raster_to_vector(raster_path, vector_path = ""):
         'EXTRA':'',
         'OUTPUT':vector_path
     }
-    if not run_processing_algorithm("gdal:polygonize", convert_params):
-        return ""
-    return vector_path
+    return run_processing_algorithm("gdal:polygonize", convert_params)
 
 def polygon_to_line(input_feature_path, output_feature_path = ""):
     '''
@@ -491,16 +459,14 @@ def polygon_to_line(input_feature_path, output_feature_path = ""):
     input_feature_path: the path of the input feature shapefile
     output_feature_path: the path of the output feature shapefile
     '''
-    if output_feature_path == "":
-        output_feature_path = generate_save_path(input_feature_path, "p2l")
+    output_feature_path = generate_save_path(input_feature_path, output_feature_path, "p2l")
     if os.path.exists(output_feature_path):
         delete_shapefile(output_feature_path)
     params = {
         'INPUT':input_feature_path,
         'OUTPUT':output_feature_path
     }
-    processing.run("native:polygonstolines", params)
-    return output_feature_path
+    return run_processing_algorithm("native:polygonstolines", params)
 
 def create_buffer(input_feature_path, buffer_distance, buffer_path = ""):
     '''
@@ -510,8 +476,7 @@ def create_buffer(input_feature_path, buffer_distance, buffer_path = ""):
     if buffer_path is not provided, the buffer shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the buffer shapefile
     '''
-    if buffer_path == "":
-        buffer_path = generate_save_path(input_feature_path, "b")
+    buffer_path = generate_save_path(input_feature_path, buffer_path, "b")
     if os.path.exists(buffer_path):
         delete_shapefile(buffer_path)
     buffer_params = {
@@ -525,9 +490,7 @@ def create_buffer(input_feature_path, buffer_distance, buffer_path = ""):
         'SEPARATE_DISJOINT':False,
         'OUTPUT':buffer_path
     }
-    if not run_processing_algorithm("native:buffer", buffer_params):
-        return ""
-    return buffer_path
+    return run_processing_algorithm("native:buffer", buffer_params)
 
 def multipart_to_singleparts(input_feature_path, output_feature_path = ""):
     '''
@@ -535,17 +498,14 @@ def multipart_to_singleparts(input_feature_path, output_feature_path = ""):
     input_feature_path: the path of the input feature shapefile
     output_feature_path: the path of the output feature shapefile
     '''
-    if output_feature_path == "":
-        output_feature_path = generate_save_path(input_feature_path, "m2s")
+    output_feature_path = generate_save_path(input_feature_path, output_feature_path, "m2s")
     if os.path.exists(output_feature_path):
         delete_shapefile(output_feature_path)
     params = {
         'INPUT':input_feature_path,
         'OUTPUT':output_feature_path
     }
-    if not run_processing_algorithm("native:multiparttosingleparts", params):
-        return ""
-    return output_feature_path
+    return run_processing_algorithm("native:multiparttosingleparts", params)
 
 def exclude_by_mask(input_feature_path, mask_path, output_feature_path = ""):
     '''
@@ -553,8 +513,7 @@ def exclude_by_mask(input_feature_path, mask_path, output_feature_path = ""):
     input_feature_path: the path of the input feature shapefile
     mask_path: the path of the mask shapefile
     '''
-    if output_feature_path == "":
-        output_feature_path = generate_save_path(input_feature_path, "mask")
+    output_feature_path = generate_save_path(input_feature_path, output_feature_path, "mask")
     if os.path.exists(output_feature_path):
         delete_shapefile(output_feature_path)
     
@@ -614,8 +573,7 @@ def simplify_shapefile(input_feature_path, tolerance, simplified_path = ""):
     if simplified_path is not provided, the simplified shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the simplified shapefile
     '''
-    if simplified_path == "":
-        simplified_path = generate_save_path(input_feature_path, "sp")
+    simplified_path = generate_save_path(input_feature_path, simplified_path, "sp")
     if os.path.exists(simplified_path):
         delete_shapefile(simplified_path)
     simplify_params = {
@@ -624,9 +582,7 @@ def simplify_shapefile(input_feature_path, tolerance, simplified_path = ""):
         'TOLERANCE':tolerance,
         'OUTPUT':simplified_path
     }
-    if not run_processing_algorithm("native:simplifygeometries", simplify_params):
-        return ""
-    return simplified_path
+    return run_processing_algorithm("native:simplifygeometries", simplify_params)
 
 def smooth_shapefile(input_feature_path, offset, smoothed_path = ""):
     '''
@@ -637,8 +593,7 @@ def smooth_shapefile(input_feature_path, offset, smoothed_path = ""):
     if smoothed_path is not provided, the smoothed shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the smoothed shapefile
     '''
-    if smoothed_path == "":
-        smoothed_path = generate_save_path(input_feature_path, "sm")
+    smoothed_path = generate_save_path(input_feature_path, smoothed_path, "sm")
     if os.path.exists(smoothed_path):
         delete_shapefile(smoothed_path)
     smoothed_params = {
@@ -648,9 +603,7 @@ def smooth_shapefile(input_feature_path, offset, smoothed_path = ""):
         'MAX_ANGLE':180,
         'OUTPUT':smoothed_path
     }
-    if not run_processing_algorithm("native:smoothgeometry", smoothed_params):
-        return ""
-    return smoothed_path
+    return run_processing_algorithm("native:smoothgeometry", smoothed_params)
 
 def all_vertices(input_feature_path, vertices_path = ""):
     '''
@@ -660,17 +613,14 @@ def all_vertices(input_feature_path, vertices_path = ""):
     if vertices_path is not provided, the vertices shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the vertices shapefile
     '''
-    if vertices_path == "":
-        vertices_path = generate_save_path(input_feature_path, "v")
+    vertices_path = generate_save_path(input_feature_path, vertices_path, "v")
     if os.path.exists(vertices_path):
         delete_shapefile(vertices_path)
     params = {
         'INPUT':input_feature_path,
         'OUTPUT':vertices_path
     }
-    if not run_processing_algorithm("native:extractvertices", params):
-        return ""
-    return vertices_path
+    return run_processing_algorithm("native:extractvertices", params)
 
 def shortest_line(source_path, target_path, max_neighbor, max_distance, shortest_line_path = ""):
     '''
@@ -683,8 +633,7 @@ def shortest_line(source_path, target_path, max_neighbor, max_distance, shortest
     if shortest_line_path is not provided, the shortest line shapefile will be saved in the same directory as the source feature shapefile
     output: the path of the shortest line shapefile
     '''
-    if shortest_line_path == "":
-        shortest_line_path = generate_save_path(source_path, "sl")
+    shortest_line_path = generate_save_path(source_path, shortest_line_path, "sl")
     if os.path.exists(shortest_line_path):
         delete_shapefile(shortest_line_path)
     shortest_line_params = {
@@ -695,9 +644,7 @@ def shortest_line(source_path, target_path, max_neighbor, max_distance, shortest
         'OUTPUT':shortest_line_path,
         'SOURCE':source_path,
     }
-    if not run_processing_algorithm("native:shortestline", shortest_line_params):
-        return ""
-    return shortest_line_path
+    return run_processing_algorithm("native:shortestline", shortest_line_params)
 
 def fix_geometry(input_feature_path, output_feature_path = ""):
     '''
@@ -707,8 +654,7 @@ def fix_geometry(input_feature_path, output_feature_path = ""):
     if output_feature_path is not provided, the output feature shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the output feature shapefile
     '''
-    if output_feature_path == "":
-        output_feature_path = generate_save_path(input_feature_path, "f")
+    output_feature_path = generate_save_path(input_feature_path, output_feature_path, "f")
     if os.path.exists(output_feature_path):
         delete_shapefile(output_feature_path)
     fix_geometry_params = {
@@ -716,9 +662,7 @@ def fix_geometry(input_feature_path, output_feature_path = ""):
         'METHOD':0,
         'OUTPUT':output_feature_path
     }
-    if not run_processing_algorithm("native:fixgeometries", fix_geometry_params):
-        return ""
-    return output_feature_path
+    return run_processing_algorithm("native:fixgeometries", fix_geometry_params)
 
 def calc_area(feature_path):
     feature_layer = QgsVectorLayer(feature_path, "feature_layer", "ogr")
@@ -751,17 +695,14 @@ def explode_line(input_feature_path, exploded_path = ""):
     if exploded_path is not provided, the exploded shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the exploded shapefile
     '''
-    if exploded_path == "":
-        exploded_path = generate_save_path(input_feature_path, "e")
+    exploded_path = generate_save_path(input_feature_path, exploded_path, "e")
     if os.path.exists(exploded_path):
         delete_shapefile(exploded_path)
     params = {
         'INPUT':input_feature_path,
         'OUTPUT':exploded_path
     }
-    if not run_processing_algorithm("native:explodelines", params):
-        return ""
-    return exploded_path
+    return run_processing_algorithm("native:explodelines", params)
 
 def direct_polygonize(raster_path, vector_path = ""):
     '''
@@ -769,8 +710,7 @@ def direct_polygonize(raster_path, vector_path = ""):
     raster_path: the path of the input raster shapefile
     vector_path: the path of the output vector shapefile
     '''
-    if vector_path == "":
-        vector_path = generate_save_path(raster_path, "dp")
+    vector_path = generate_save_path(raster_path, vector_path, "dp")
     if os.path.exists(vector_path):
         delete_shapefile(vector_path)
     params = {
@@ -778,8 +718,7 @@ def direct_polygonize(raster_path, vector_path = ""):
         'KEEP_FIELDS':False,
         'OUTPUT':vector_path
     }
-    processing.run("native:polygonize", params)
-    return vector_path
+    return run_processing_algorithm("native:polygonize", params)
 
 def sort_features(feature_path, field_name, ascending = True, output_feature_path = ""):
     '''
@@ -788,8 +727,7 @@ def sort_features(feature_path, field_name, ascending = True, output_feature_pat
     field_name: the name of the field to sort
     ascending: the order of the sorting
     '''
-    if output_feature_path == "":
-        output_feature_path = generate_save_path(feature_path, "sorted")
+    output_feature_path = generate_save_path(feature_path, output_feature_path, "sorted")
     if os.path.exists(output_feature_path):
         delete_shapefile(output_feature_path)
     expression = f'"{field_name}"'
@@ -800,8 +738,7 @@ def sort_features(feature_path, field_name, ascending = True, output_feature_pat
         'NULLS_FIRST':True,
         'OUTPUT':output_feature_path
     }
-    processing.run("native:orderbyexpression", params)
-    return output_feature_path
+    return run_processing_algorithm("native:orderbyexpression", params)
 
 def aggregate_features(feature_path, field_name, output_feature_path = ""):
     '''
@@ -812,8 +749,7 @@ def aggregate_features(feature_path, field_name, output_feature_path = ""):
     if output_feature_path is not provided, the output feature shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the output feature shapefile
     '''
-    if output_feature_path == "":
-        output_feature_path = generate_save_path(feature_path, "aggregated")
+    output_feature_path = generate_save_path(feature_path, output_feature_path, "a")
     if os.path.exists(output_feature_path):
         delete_shapefile(output_feature_path)
     params = {
@@ -824,6 +760,28 @@ def aggregate_features(feature_path, field_name, output_feature_path = ""):
             {'aggregate': 'sum','delimiter': ',','input': '"area"','length': 20,'name': 'area','precision': 10,'sub_type': 0,'type': 6,'type_name': 'double precision'}],
         'OUTPUT':output_feature_path
     }
-    if not run_processing_algorithm("native:aggregate", params):
-        return ""
-    return output_feature_path
+    return run_processing_algorithm("native:aggregate", params)
+
+def sample_in_polygon(input_feature_path, point_inside_number, min_distance_inside, output_feature_path = "" , seed = None):
+    '''
+    Use QGIS API to sample the input feature layer in the polygon
+    input_feature_path: the path of the input feature shapefile
+    point_inside_number: the number of the points inside the polygon
+    output_feature_path: the path of the output feature shapefile
+    if output_feature_path is not provided, the output feature shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the output feature shapefile
+    '''
+    output_feature_path = generate_save_path(input_feature_path, output_feature_path, "sample")
+    if os.path.exists(output_feature_path):
+        delete_shapefile(output_feature_path)
+    params = {
+        'INPUT':input_feature_path,
+        'POINTS_NUMBER':point_inside_number,
+        'MIN_DISTANCE':min_distance_inside,
+        'MIN_DISTANCE_GLOBAL':0,
+        'MAX_TRIES_PER_POINT':3,
+        'SEED':seed,
+        'INCLUDE_POLYGON_ATTRIBUTES':True,
+        'OUTPUT':output_feature_path
+    }
+    return run_processing_algorithm("native:randompointsinpolygons", params)
