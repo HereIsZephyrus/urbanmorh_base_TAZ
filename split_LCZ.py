@@ -19,7 +19,6 @@ gdal.AllRegister()
 ogr.UseExceptions()
 ogr.RegisterAll()
 
-lcz_dir = os.getenv("LCZ_DIR")
 QGIS_PREFIX_PATH = os.environ.get("QGIS_PREFIX_PATH")
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 QgsApplication.setPrefixPath(QGIS_PREFIX_PATH, True)
@@ -28,14 +27,6 @@ app.initQgis()
 from construct_qgis_functions import *
 
 logger.info("QGIS initialized")
-split_level_mapper = {
-    "natural": [10],
-    "water": [16.1]
-}
-split_operand_mapper = {
-    "natural": "> 10",
-    "water": "= 17"
-}
 
 def copy_base_road():
     base_road_filepath = os.getenv("OSM_ROAD")
@@ -43,11 +34,29 @@ def copy_base_road():
     reproject_shapefile(base_road_filepath, current_filepath)
     return current_filepath
 
+def generate_expression(layer_name, split_type):
+    split_operand_mapper = {
+        "natural": ["!=4"],
+        "water": ["=3","=7"]
+    }
+    operands = split_operand_mapper[split_type]
+    for operand, index in enumerate(operands):
+        if index == 0:
+            expression = f'"{layer_name}@1"{operand}'
+        else:
+            expression += f' or "{layer_name}@1"{operand}'
+
+    return expression
+
 def split_tiff(location_dir, file, split_type):
     file_path = os.path.join(location_dir, file)
     LCZtiff = gdal.Open(file_path)
     LCZdata = LCZtiff.GetRasterBand(1)
     spatialRef = LCZtiff.GetSpatialRef()
+    split_level_mapper = {
+        "natural": [10],
+        "water": [16.1]
+    }
 
     try:
         driver = ogr.GetDriverByName("ESRI Shapefile")
@@ -108,9 +117,9 @@ def create_contour_mask(location_dir, file_name, split_type):
     return proj_filter_path
 
 def create_image_mask(location_dir, file_name, split_type):
-    mask_operand = split_operand_mapper[split_type]
     tif_location = os.path.join(location_dir, file_name)
-    rawtiff_layer = QgsRasterLayer(tif_location, "rawtiff_layer")
+    layer_name = "rawtiff_layer"
+    rawtiff_layer = QgsRasterLayer(tif_location, layer_name)
     if not rawtiff_layer.isValid():
         logger.error(f"rawtiff_layer is not valid")
         return ""
@@ -121,7 +130,8 @@ def create_image_mask(location_dir, file_name, split_type):
     entry.bandNumber = 1
     entries = [entry]
     output_path = os.path.join(location_dir, f"{split_type}_mask.tif")
-    expression = f'"rawtiff_layer@1" {mask_operand}'
+    expression = generate_expression(layer_name, split_type)
+    print(expression)
     calc = QgsRasterCalculator(expression, output_path, 'GTiff',
                             rawtiff_layer.extent(), 
                             rawtiff_layer.crs(),
@@ -158,21 +168,6 @@ def create_boundary_mask(image_mask_path, buffer_size = 0):
     logger.debug(f"filter_path: {filter_path}")
     return filter_path
 
-def filter_lcz_vectors(splited_road_path, feature_path):
-    splited_road_centroid_path = calc_line_centroid(splited_road_path)
-    logger.debug(f"splited_road_centroid_path: {splited_road_centroid_path}")
-    distance_extracted_centroid_path = extract_whithindistance(splited_road_centroid_path, feature_path, 20)
-    logger.debug(f"distance_extracted_centroid_path: {distance_extracted_centroid_path}")
-    joined_splited_road_path = join_by_attribute(splited_road_path, distance_extracted_centroid_path)
-    logger.debug(f"joined_splited_road_path: {joined_splited_road_path}")
-    filtered_splited_road_path = extract_nonull_attribute(joined_splited_road_path, "FID_2")
-    logger.debug(f"filtered_splited_road_path: {filtered_splited_road_path}")
-    delete_shapefile(splited_road_path)
-    delete_shapefile(splited_road_centroid_path)
-    delete_shapefile(distance_extracted_centroid_path)
-    delete_shapefile(joined_splited_road_path)
-    return filtered_splited_road_path
-
 def mess_up_splited_feature(splited_path):
     # delete all attributes except FID
     layer = QgsVectorLayer(splited_path, "splited_path", "ogr")
@@ -184,6 +179,16 @@ def mess_up_splited_feature(splited_path):
     layer.updateFields()
     layer.commitChanges()
     reindex_feature(splited_path,"FID")
+
+def filter_lcz_vectors(splited_road_path, feature_path):
+    splited_road_centroid_path = calc_line_centroid(splited_road_path)
+    logger.debug(f"splited_road_centroid_path: {splited_road_centroid_path}")
+    distance_extracted_centroid_path = extract_whithindistance(splited_road_centroid_path, feature_path, 20)
+    logger.debug(f"distance_extracted_centroid_path: {distance_extracted_centroid_path}")
+    joined_splited_road_path = join_by_attribute(splited_road_path, distance_extracted_centroid_path, "monoid")
+    proj_joined_splited_road_path = reproject_shapefile(joined_splited_road_path)
+    mess_up_splited_feature(proj_joined_splited_road_path)
+    return proj_joined_splited_road_path
 
 def exclude_edges(point_intersection_path, edge_type, field_name):
     if (edge_type == "bial"):
@@ -238,7 +243,7 @@ def calc_remained_road(splited_with_feature_path, exclude_list):
 
     request = QgsFeatureRequest().setFilterFids(remained_list)
     output_layer = layer.materialize(request)
-    output_path = generate_save_path(splited_with_feature_path, "selected")
+    output_path = generate_save_path(splited_with_feature_path, "" ,"selected")
     if os.path.exists(output_path):
         delete_shapefile(output_path)
 
@@ -294,7 +299,9 @@ def merge_road(base_road_filepath, natural_mask_path, natural_path, water_path):
     intersection_with_feature_path = calc_line_intersection(splited_road_path, natural_path)
     logger.debug(f"intersection_with_feature_path: {intersection_with_feature_path}")
     filtered_splited_road_path = filter_lcz_vectors(splited_road_path, natural_path)
+    logger.debug(f"filtered_splited_road_path: {filtered_splited_road_path}")
     processed_road_path = post_process_road(filtered_splited_road_path, natural_path, intersection_with_feature_path)
+    logger.debug(f"processed_road_path: {processed_road_path}")
     masked_road_path = exclude_by_mask(processed_road_path, natural_mask_path)
     logger.debug(f"masked_road_path: {masked_road_path}")
     merged_vector_path = merge_vector([masked_road_path, natural_path, water_path])
@@ -315,7 +322,6 @@ def simplify_road(input_feature_path):
     create_spatial_index(exploded_single_simplified_path)
     shortest_line_path = shortest_line(vertices_path, exploded_single_simplified_path, 3, 80.0)
     logger.debug(f"shortest_line_path: {shortest_line_path}")
-    exploded_single_simplified_path = "/mnt/repo/YZB/TAZ/precise/LCZ/wuhan/natural_contour_f_p_roads_j_uni_d_s_s_selected_mask_m_sm_sp_d_e.shp"
     merged_vector_path = merge_vector([shortest_line_path, exploded_single_simplified_path])
     logger.debug(f"merged_vector_path: {merged_vector_path}")
     return merged_vector_path
@@ -530,34 +536,84 @@ def adjust_road(road_feature_path, TAZ_raster_path):
     adjust_road_path = polygon_to_line(polygonized_path)
     return adjust_road_path
 
+def split_road_by_purity(adjust_road_path, LCZ_raster_path, boundary_city_path):
+    polygon_layer = convert_line_to_polygon(adjust_road_path,None)
+    logger.debug(f"created polygon layer")
+    grid_point_layer = create_grid_point(polygon_layer, spacing = 100, output_feature_path = None)
+    logger.debug(f"grid_point_layer: {grid_point_layer}")
+    params = {'INPUT':grid_point_layer,
+              'OVERLAY':adjust_road_path,
+              'INPUT_FIELDS':['SAMPLE_1'],
+              'OVERLAY_FIELDS':['FID'],
+              'OVERLAY_FIELDS_PREFIX':'','OUTPUT':'TEMPORARY_OUTPUT',
+              'GRID_SIZE':None}
+    result = processing.run("native:intersection", params)
+    if 'error' in result:
+        logger.error(f"error in intersection: {result['error']}")
+        return ""
+    sample_layer = result['OUTPUT']
+    logger.debug(f"sample_layer: {sample_layer}")
+    with_purity_layer = calc_purity(polygon_layer,sample_layer,None)
+    logger.debug(f"calculated purity")
+    
+    return result['OUTPUT']
+
+def split_road_by_geometry(adjust_road_path):
+    return adjust_road_path
+
+def process_location(location_dir, base_road_filepath, lcz_path, landcover_path, boundary_city_path):
+    natural_mask_path = create_image_mask(location_dir, landcover_path, "natural")
+    buffered_natural_mask_path = create_boundary_mask(natural_mask_path, buffer_size = 20)
+    logger.info(f"buffered_natural_mask_path: {buffered_natural_mask_path}")
+    #natural_path = create_contour_mask(location_dir, lcz_path, "natural")
+    natural_path = create_boundary_mask(natural_mask_path, buffer_size = 10)
+    logger.info(f"natural_path: {natural_path}")
+    water_mask_path = create_image_mask(location_dir, landcover_path, "water")
+    logger.info(f"water_mask_path: {water_mask_path}")
+    water_path = create_boundary_mask(water_mask_path, buffer_size = 10)
+    logger.info(f"water_path: {water_path}")
+
+    merged_vector_path = merge_road(base_road_filepath, buffered_natural_mask_path, natural_path, water_path)
+    logger.info(f"merged_vector_path: {merged_vector_path}")
+    simplified_merged_vector_path = simplify_road(merged_vector_path)
+    logger.info(f"simplified_merged_vector_path: {simplified_merged_vector_path}")
+    adjust_road_path = adjust_road(simplified_merged_vector_path, lcz_path)
+    logger.info(f"adjust_road_path: {adjust_road_path}")
+    pure_road_path = split_road_by_purity(adjust_road_path, lcz_path, boundary_city_path)
+    logger.info(f"pure_road_path: {pure_road_path}")
+    adjust_pure_road_path = adjust_road(pure_road_path, lcz_path)
+    logger.info(f"adjust_pure_road_path: {adjust_pure_road_path}")
+    geometry_road_path = split_road_by_geometry(adjust_pure_road_path)
+    logger.info(f"geometry_road_path: {geometry_road_path}")
+    adjust_geometry_road_path = adjust_road(geometry_road_path, lcz_path)
+    return adjust_geometry_road_path
+
 def __main__():
     app.initQgis()
     total_base_road_filepath = copy_base_road()
+    lcz_dir = os.getenv("LCZ_DIR")
+    total_landcover_path = os.path.join(os.getenv("LAND_COVER_DIR"), os.getenv("COVER_YEAR") + ".tif")
     for location in os.listdir(lcz_dir):
         location_dir = os.path.join(lcz_dir, location)
         logger.info(f"processing {location}")
 
         tif_path = os.path.join(location_dir, location + ".tif")
         boundary_city_path = os.path.join(location_dir, location + ".shp")
+        logger.info(f"find tif file: {tif_path} and boundary city file: {boundary_city_path}")
         
-        base_road_filepath = clip_vector(total_base_road_filepath, boundary_city_path)
-        cliped_tif_path = clip_raster(tif_path, boundary_city_path)
-        
-        natural_mask_path = create_image_mask(location_dir, cliped_tif_path, "natural")
-        buffered_natural_mask_path = create_boundary_mask(natural_mask_path, buffer_size = 50)
-        logger.info(f"buffered_natural_mask_path: {buffered_natural_mask_path}")
-        natural_path = create_contour_mask(location_dir, cliped_tif_path, "natural")
-        logger.info(f"natural_path: {natural_path}")
-        water_mask_path = create_image_mask(location_dir, cliped_tif_path, "water")
-        logger.info(f"water_mask_path: {water_mask_path}")
-        water_path = create_boundary_mask(water_mask_path, buffer_size = 10)
-        logger.info(f"water_path: {water_path}")
+        boundary_line_path = polygon_to_line(boundary_city_path)
+        base_road_filepath = merge_layers([boundary_line_path, clip_vector(total_base_road_filepath, boundary_city_path,None)],4326)
+        logger.info(f"base_road_filepath: {base_road_filepath}")
 
-        merged_vector_path = merge_road(base_road_filepath, buffered_natural_mask_path, natural_path, water_path)
-        logger.info(f"merged_vector_path: {merged_vector_path}")
-        simplified_merged_vector_path = simplify_road(merged_vector_path)
-        logger.info(f"simplified_merged_vector_path: {simplified_merged_vector_path}")
-        adjust_road_path = adjust_road(simplified_merged_vector_path, cliped_tif_path)
+        cliped_tif_path = clip_raster(tif_path, boundary_city_path)
+        logger.info(f"cliped_LCZ_tif_path: {cliped_tif_path}")
+
+        cliped_landcover_path = clip_raster(total_landcover_path, boundary_city_path)
+        logger.info(f"cliped_landcover_path: {cliped_landcover_path}")
+
+        result = process_location(location_dir, base_road_filepath, cliped_tif_path, cliped_landcover_path, boundary_city_path)
+        logger.info(f"result: {result}")
+
     app.exitQgis()
 
 if __name__ == "__main__":

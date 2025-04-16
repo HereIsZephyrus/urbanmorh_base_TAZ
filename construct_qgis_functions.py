@@ -31,13 +31,19 @@ def delete_shapefile(shp_path):
         if file.startswith(shp_name):
             os.remove(os.path.join(shp_dir, file))
 
-def generate_save_path(origin_path, output_path, prefix = ""):
+def generate_save_path(origin_path, output_path, prefix = "", type = "vector"):
     if output_path is None:
         return 'TEMPORARY_OUTPUT'
+    if type == "vector":
+        extension = ".shp"
+    elif type == "raster":
+        extension = ".tif"
+    else:
+        extension = ""
     if output_path == "":
         dir = os.path.dirname(origin_path)
         name = os.path.basename(origin_path).split('.')[0]
-        new_path = os.path.join(dir, f'{name}_{prefix}.shp')
+        new_path = os.path.join(dir, f'{name}_{prefix}{extension}')
         return new_path
     else:
         return output_path
@@ -64,7 +70,6 @@ def reindex_feature(feature_path, field_name):
         logger.error(f"feature_layer is not valid")
         return ""
     if field_name not in [f.name() for f in feature_layer.fields()]:
-        print(f"field_name: {field_name} + {feature_layer.fields()}")
         feature_layer.dataProvider().addAttributes([construct_index_field(field_name)])
         feature_layer.updateFields()
     monoid_field_index = feature_layer.fields().indexOf(field_name)
@@ -214,11 +219,12 @@ def create_spatial_index(feature_path):
         return False
     return True
 
-def join_by_attribute(input_feature_path, add_feature_path, join_path = ""):
+def join_by_attribute(input_feature_path, add_feature_path, field_name, join_path = ""):
     '''
     Use QGIS API to join the input feature layer by the add feature layer
     input_feature_path: the path of the input feature shapefile
     add_feature_path: the path of the add feature shapefile
+    field_name: the name of the field to join
     if join_path is not provided, the joined shapefile will be saved in the same directory as the input feature shapefile
     output: the path of the joined shapefile
     '''
@@ -227,9 +233,9 @@ def join_by_attribute(input_feature_path, add_feature_path, join_path = ""):
         delete_shapefile(join_path)
     join_params = {
         'DISCARD_NONMATCHING' : False,
-        'FIELD' : 'monoid',
+        'FIELD' : field_name,
         'FIELDS_TO_COPY' : [],
-        'FIELD_2' : 'monoid',
+        'FIELD_2' : field_name,
         'INPUT' : input_feature_path,
         'INPUT_2' : add_feature_path,
         'METHOD' : 1,
@@ -812,7 +818,7 @@ def clip_raster(raster_path, polygon_path, output_raster_path = ""):
     raster_path: the path of the input raster shapefile
     polygon_path: the path of the input polygon shapefile
     '''
-    output_raster_path = generate_save_path(raster_path, output_raster_path, "clip")
+    output_raster_path = generate_save_path(raster_path, output_raster_path, "c", "raster")
     params = {
         'INPUT':raster_path,
         'MASK':polygon_path,
@@ -826,7 +832,7 @@ def clip_vector(vector_path, polygon_path, output_vector_path = ""):
     vector_path: the path of the input vector shapefile
     polygon_path: the path of the input polygon shapefile
     '''
-    output_vector_path = generate_save_path(vector_path, output_vector_path, "clip")
+    output_vector_path = generate_save_path(vector_path, output_vector_path, "c")
     if os.path.exists(output_vector_path):
         delete_shapefile(output_vector_path)
     params = {
@@ -835,3 +841,49 @@ def clip_vector(vector_path, polygon_path, output_vector_path = ""):
         'OUTPUT':output_vector_path
     }
     return run_processing_algorithm("native:clip", params)
+
+def create_grid_point(reference_layer, spacing, output_feature_path = ""):
+    '''
+    Use QGIS API to create a grid of points from the input polygon layer
+    reference_layer: the path of the input polygon shapefile
+    spacing: the spacing of the grid
+    output_feature_path: the path of the output feature shapefile
+    if output_feature_path is not provided, the output feature shapefile will be saved in the same directory as the input feature shapefile
+    output: the path of the output feature shapefile
+    '''
+    output_feature_path = generate_save_path(reference_layer, output_feature_path, "grid")
+    extent = reference_layer.extent().toString()
+    params = {
+        'TYPE':0,
+        'EXTENT':f'{extent} [EPSG:4326]',
+        'HSPACING':spacing,
+        'VSPACING':spacing,
+        'HOVERLAY':0,
+        'VOVERLAY':0,
+        'CRS':QgsCoordinateReferenceSystem('EPSG:32650'),
+        'OUTPUT':output_feature_path
+    }
+    return run_processing_algorithm("native:creategrid", params)
+
+def calc_purity(polygon_layer, sample_layer, output_feature_path = ""):
+    '''
+    Use QGIS API to calculate the purity of the input polygon layer
+    polygon_layer: the path of the input polygon shapefile
+    sample_layer: the path of the sample feature shapefile
+    '''
+    output_feature_path = generate_save_path(polygon_layer, output_feature_path, "purity")
+    aggregate_params = {
+        'INPUT':sample_layer,
+        'GROUP_BY':'"FID"',
+        'AGGREGATES':[
+            {'aggregate': 'stdev','delimiter': ',','input': '"SAMPLE_1"','length': 10,'name': 'stdev','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+            {'aggregate': 'first_value','delimiter': ',','input': '"FID"','length': 11,'name': 'FID','precision': 0,'sub_type': 0,'type': 4,'type_name': 'int8'},
+            {'aggregate': 'mean','delimiter': ',','input': '"SAMPLE_1"','length': 10,'name': 'mean','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'}],
+        'OUTPUT':output_feature_path
+    }
+    result = processing.run("native:aggregate", aggregate_params)
+    if 'error' in result:
+        logger.error(f"error in aggregate: {result['error']}")
+        return ""
+    return join_by_attribute(polygon_layer, result['OUTPUT'], 'FID')
+
