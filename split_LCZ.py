@@ -37,10 +37,12 @@ def copy_base_road():
 def generate_expression(layer_name, split_type):
     split_operand_mapper = {
         "natural": ["!=4"],
-        "water": ["=3","=7"]
+        "water": ["=17"]
+        #"water": ["=3","=7"]
     }
     operands = split_operand_mapper[split_type]
-    for operand, index in enumerate(operands):
+    expression = ""
+    for index, operand in enumerate(operands):
         if index == 0:
             expression = f'"{layer_name}@1"{operand}'
         else:
@@ -131,7 +133,6 @@ def create_image_mask(location_dir, file_name, split_type):
     entries = [entry]
     output_path = os.path.join(location_dir, f"{split_type}_mask.tif")
     expression = generate_expression(layer_name, split_type)
-    print(expression)
     calc = QgsRasterCalculator(expression, output_path, 'GTiff',
                             rawtiff_layer.extent(), 
                             rawtiff_layer.crs(),
@@ -186,9 +187,8 @@ def filter_lcz_vectors(splited_road_path, feature_path):
     distance_extracted_centroid_path = extract_whithindistance(splited_road_centroid_path, feature_path, 20)
     logger.debug(f"distance_extracted_centroid_path: {distance_extracted_centroid_path}")
     joined_splited_road_path = join_by_attribute(splited_road_path, distance_extracted_centroid_path, "monoid")
-    proj_joined_splited_road_path = reproject_shapefile(joined_splited_road_path)
-    mess_up_splited_feature(proj_joined_splited_road_path)
-    return proj_joined_splited_road_path
+    mess_up_splited_feature(joined_splited_road_path)
+    return joined_splited_road_path
 
 def exclude_edges(point_intersection_path, edge_type, field_name):
     if (edge_type == "bial"):
@@ -268,7 +268,8 @@ def post_process_road(road_filepath, feature_path, intersection_with_feature_pat
     logger.debug(f"dissolved_splited_road_path: {dissolved_splited_road_path}")
     splited_dissove_path = split_line_with_line(dissolved_splited_road_path, dissolved_splited_road_path)
     logger.debug(f"splited_dissove_path: {splited_dissove_path}")
-    splited_with_feature_path = split_line_with_line(splited_dissove_path, feature_path)
+    explode_feature_path = explode_line(feature_path)
+    splited_with_feature_path = split_line_with_line(splited_dissove_path, explode_feature_path)
     logger.debug(f"splited_with_feature_path: {splited_with_feature_path}")
     mess_up_splited_feature(splited_with_feature_path)
     logger.debug(f"mess_up_splited_feature_path")
@@ -282,8 +283,8 @@ def post_process_road(road_filepath, feature_path, intersection_with_feature_pat
     logger.debug(f"calculated exclude_list")
     remained_road_path = calc_remained_road(splited_with_feature_path, exclude_list)
     logger.debug(f"remained_road_path: {remained_road_path}")
-    delete_shapefile(dissolved_splited_road_path)
-    delete_shapefile(splited_dissove_path)
+    #delete_shapefile(dissolved_splited_road_path)
+    #delete_shapefile(splited_dissove_path)
     #delete_shapefile(endpoint_path)
     return remained_road_path
 
@@ -295,10 +296,11 @@ def merge_vector(layer_list):
 
 def merge_road(base_road_filepath, natural_mask_path, natural_path, water_path):
     splited_road_path = split_lines(base_road_filepath, natural_path)
-    logger.debug(f"splited_road_path: {splited_road_path}")
-    intersection_with_feature_path = calc_line_intersection(splited_road_path, natural_path)
+    proj_splited_road_path = reproject_shapefile(splited_road_path)
+    logger.debug(f"splited_road_path: {proj_splited_road_path}")
+    intersection_with_feature_path = calc_line_intersection(proj_splited_road_path, natural_path)
     logger.debug(f"intersection_with_feature_path: {intersection_with_feature_path}")
-    filtered_splited_road_path = filter_lcz_vectors(splited_road_path, natural_path)
+    filtered_splited_road_path = filter_lcz_vectors(proj_splited_road_path, natural_path)
     logger.debug(f"filtered_splited_road_path: {filtered_splited_road_path}")
     processed_road_path = post_process_road(filtered_splited_road_path, natural_path, intersection_with_feature_path)
     logger.debug(f"processed_road_path: {processed_road_path}")
@@ -318,39 +320,79 @@ def simplify_road(input_feature_path):
     logger.debug(f"exploded_single_simplified_path: {exploded_single_simplified_path}")
     vertices_path = all_vertices(exploded_single_simplified_path)
     logger.debug(f"vertices_path: {vertices_path}")
+    # delete attributes to fast the process
+    layer = QgsVectorLayer(vertices_path, "vertices_path", "ogr")
+    data_provider = layer.dataProvider()
+    field_indices = list(range(len(data_provider.fields())))
+    data_provider.deleteAttributes(field_indices)
+    layer.updateFields()
+    layer.commitChanges()
+    reindex_feature(vertices_path, "FID")
+
     create_spatial_index(vertices_path)
     create_spatial_index(exploded_single_simplified_path)
-    shortest_line_path = shortest_line(vertices_path, exploded_single_simplified_path, 3, 80.0)
+    shortest_line_path = shortest_line(vertices_path, exploded_single_simplified_path, 2, 50)
+    # calculate the length of the shortest line
+    shortest_line_path = filter_by_line_length(shortest_line_path, 50)
     logger.debug(f"shortest_line_path: {shortest_line_path}")
     merged_vector_path = merge_vector([shortest_line_path, exploded_single_simplified_path])
     logger.debug(f"merged_vector_path: {merged_vector_path}")
     return merged_vector_path
 
-def parallel_mingle_road(polygon_layer, fields, request, area_threshold, minor_area_threshold, TAZ_raster_path):
-    def merged_into_closest_neighbor(feature, polygon_index, area_threshold, minor_area_threshold):
-        fid = feature.id()
-        feature_geom = feature.geometry()
-        feature_area = feature_geom.area()
+def join_sample_into_polygon(polygon_layer, TAZ_raster_path):
+    sample_in_polygon_layer = sample_in_polygon(polygon_layer, point_inside_number=10, min_distance_inside=200, seed=None)
+    logger.debug(f"sampled in polygon layer")
+    sample_on_LCZ_layer = sample_raster_values(TAZ_raster_path, sample_in_polygon_layer, None)
+    logger.debug(f"sampled on LCZ layer")
+    result = processing.run("native:aggregate", {'INPUT':sample_on_LCZ_layer,
+        'GROUP_BY':'"FID"',
+        'AGGREGATES':[{'aggregate': 'first_value','delimiter': ',','input': '"FID"','length': 11,'name': 'FID','precision': 0,'sub_type': 0,'type': 4,'type_name': 'int8'},
+        {'aggregate': 'first_value','delimiter': ',','input': '"area"','length': 20,'name': 'area','precision': 10,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+        {'aggregate': 'mean','delimiter': ',','input': '"SAMPLE_1"','length': 5,'name': 'SAMPLE','precision': 2,'sub_type': 0,'type': 6,'type_name': 'double precision'}],
+        'OUTPUT':'TEMPORARY_OUTPUT'
+    })
+    if 'error' in result:
+        logger.error(f"error in aggregate: {result['error']}")
+        return 0
+    aggregateed_sample_layer = result['OUTPUT']
+    logger.debug(f"aggregated sample layer")
+    result = processing.run("native:joinattributestable", {
+        'INPUT':polygon_layer,'FIELD':'FID','INPUT_2':aggregateed_sample_layer,
+        'FIELD_2':'FID','FIELDS_TO_COPY':['SAMPLE'],'METHOD':1,'DISCARD_NONMATCHING':False,'PREFIX':'',
+        'OUTPUT':'TEMPORARY_OUTPUT'
+    })
+    if 'error' in result:
+        logger.error(f"error in join attribute table: {result['error']}")
+        return 0
+    joined_polygon_layer = result['OUTPUT']
+    logger.debug(f"joined sample value into polygon layer")
+    return joined_polygon_layer
+
+def parallel_mingle_road(joined_polygon_layer, request, area_threshold, minor_area_threshold, TAZ_raster_path):
+    def merged_into_closest_neighbor(feature, polygon_layer, polygon_index, fields, area_threshold, minor_area_threshold):
+        fid_field_index = fields.indexOf("FID")
+        area_field_index = fields.indexOf("area")
         sample_field_index = fields.indexOf("SAMPLE")
+        fid = feature.attributes()[fid_field_index]        
+        feature_area = feature.attributes()[area_field_index]
         sample_value = feature.attributes()[sample_field_index]
-        if sample_value == 0:
-            logger.warning(f"feature {fid} has no sample value")
-            return None
         if feature_area > area_threshold:
             return None
+        if sample_value == 0:
+            logger.warning(f"feature {fid} has no sample value")
+        feature_geom = feature.geometry()
         bbox = feature_geom.boundingBox()
-        bbox.grow(2)
+        bbox.grow(10)
         candidates = polygon_index.intersects(bbox)
         if len(candidates) == 0:
             return None
         closest_neighbor_fid = 0
-        min_distance = 0
+        min_distance = 100
         for candidate_fid in candidates:
-            if candidate_fid == feature.id():
+            if candidate_fid == fid:
                 continue
             candidate = polygon_layer.getFeature(candidate_fid)
-            shared_edge = feature_geom.intersection(candidate.geometry())
-            if shared_edge.type() != QgsWkbTypes.LineGeometry or shared_edge.type() != QgsWkbTypes.MultiLineGeometry:
+            if not feature_geom.touches(candidate.geometry()):
                 continue
             candidate_sample_value = candidate.attributes()[sample_field_index]
             if candidate_sample_value == 0:
@@ -358,10 +400,12 @@ def parallel_mingle_road(polygon_layer, fields, request, area_threshold, minor_a
             sample_distance = abs(sample_value - candidate_sample_value)
             if sample_distance < min_distance:
                 min_distance = sample_distance
-                closest_neighbor_fid = candidate_fid
+                closest_neighbor_fid = candidate.attributes()[fid_field_index]
                 if feature_area < minor_area_threshold:
                     break
-        return tuple(fid, closest_neighbor_fid)
+        if closest_neighbor_fid == 0:
+            return None
+        return (fid, closest_neighbor_fid)
     
     def update_feature(id_pair, polygon_layer, fields, monitor):
         if id_pair is None:
@@ -382,66 +426,40 @@ def parallel_mingle_road(polygon_layer, fields, request, area_threshold, minor_a
         return True
 
     #calculate the sample number on the polygon layer
-    polygon_index = QgsSpatialIndex(polygon_layer)
-    sample_in_polygon_layer = sample_in_polygon(polygon_layer, point_inside_number=10, min_distance_inside=200, seed=None)
-    logger.debug(f"sampled in polygon layer")
-    sample_on_LCZ_layer = sample_raster_values(TAZ_raster_path, sample_in_polygon_layer, None)
-    logger.debug(f"sampled on LCZ layer")
-    result = processing.run("native:aggregate", {'INPUT':sample_on_LCZ_layer,
-        'GROUP_BY':'"FID"',
-        'AGGREGATES':[{'aggregate': 'first_value','delimiter': ',','input': '"FID"','length': 11,'name': 'FID','precision': 0,'sub_type': 0,'type': 4,'type_name': 'int8'},
-        {'aggregate': 'first_value','delimiter': ',','input': '"area"','length': 20,'name': 'area','precision': 10,'sub_type': 0,'type': 6,'type_name': 'double precision'},
-        {'aggregate': 'mean','delimiter': ',','input': '"SAMPLE_1"','length': 5,'name': 'SAMPLE','precision': 2,'sub_type': 0,'type': 6,'type_name': 'double precision'}],
-        'OUTPUT':'TEMPORARY_OUTPUT'
-    })
-    if 'error' in result:
-        logger.error(f"error in aggregate: {result['error']}")
-        return 0
-    aggregateed_sample_layer = result['OUTPUT']
-    logger.debug(f"aggregated sample layer")
-    result = processing.run("native:joinattributestable", {
-        'INPUT':aggregateed_sample_layer,'FIELD':'FID','INPUT_2':aggregateed_sample_layer,
-        'FIELD_2':'FID','FIELDS_TO_COPY':['SAMPLE'],'METHOD':1,'DISCARD_NONMATCHING':False,'PREFIX':'',
-        'OUTPUT':'TEMPORARY_OUTPUT'
-    })
-    if 'error' in result:
-        logger.error(f"error in join attribute table: {result['error']}")
-        return 0
-    joined_polygon_layer = result['OUTPUT']
-    logger.debug(f"joined sample value into polygon layer")
-
     adjusted_num = 0
+    fields = joined_polygon_layer.fields()
+    polygon_index = QgsSpatialIndex(joined_polygon_layer)
     with ProgressBar() as monitor:
-        merge_func = partial(merged_into_closest_neighbor, polygon_index = polygon_index, area_threshold = area_threshold, minor_area_threshold = minor_area_threshold)
+        merge_func = partial(merged_into_closest_neighbor, polygon_layer = joined_polygon_layer, polygon_index = polygon_index, fields = fields,area_threshold = area_threshold, minor_area_threshold = minor_area_threshold)
         update_func = partial(update_feature, polygon_layer = joined_polygon_layer, fields = fields, monitor = monitor)
         task = monitor.add_task("Adjusting road", total=None)
         polygon_index = QgsSpatialIndex(joined_polygon_layer)
         with edit(joined_polygon_layer):
-            with ThreadPoolExecutor() as executor:
-                pairs = executor.map(merge_func, joined_polygon_layer.getFeatures(request))
-                logger.debug(f"finish pair search")
-                results = executor.map(update_func, pairs)
-                logger.debug(f"finish feature add")
-                for result in results:
-                    if result:
-                        adjusted_num += 1
-    polygon_layer_path = joined_polygon_layer.source()
-    aggregate_layer = aggregate_features(polygon_layer_path, 'FID', None)
-    delete_shapefile(polygon_layer_path)
-
-    options = QgsVectorFileWriter.SaveVectorOptions()
-    options.driverName = "ESRI Shapefile"
-    options.fileEncoding = "utf-8"
-    error = QgsVectorFileWriter.writeAsVectorFormatV3(
-        aggregate_layer,
-        polygon_layer_path,
-        QgsProject.instance().transformContext(),
-        options,
-    )
-    if (error[0] != 0):
-        logger.error(f"error writing output layer: {error}")
-        return ""
-    polygon_layer.reload()
+            # use single thread to debug
+            for feature in joined_polygon_layer.getFeatures(request):
+                id_pair = merge_func(feature)
+                result = update_func(id_pair)
+                if result:
+                    adjusted_num += 1
+            #with ThreadPoolExecutor() as executor:
+            #    pairs = executor.map(merge_func, joined_polygon_layer.getFeatures(request))
+            #    logger.debug(f"finish pair search")
+            #    results = executor.map(update_func, pairs)
+            #    logger.debug(f"finish feature add")
+            #    for result in results:
+            #        if result:
+            #            adjusted_num += 1
+    aggregate_layer = aggregate_features(joined_polygon_layer, 'FID', None)
+    
+    # copy and delete the aggregate layer into joined_polygon_layer
+    with edit(joined_polygon_layer):
+        # delete all features in joined_polygon_layer
+        joined_polygon_layer.deleteFeatures(list(range(joined_polygon_layer.featureCount())))
+        # add the aggregate layer into joined_polygon_layer
+        for feature in aggregate_layer.getFeatures():
+            joined_polygon_layer.addFeature(feature)
+        aggregate_layer.deleteFeatures(list(range(aggregate_layer.featureCount())))
+    
     logger.debug("reloaded polygon layer")
     return adjusted_num
 
@@ -504,13 +522,12 @@ def adjust_road(road_feature_path, TAZ_raster_path):
     sorted_polygonized_path = sort_features(polygonized_path, "area", True)
     logger.debug(f"sorted_polygonized_path: {sorted_polygonized_path}")
     polygon_layer = QgsVectorLayer(sorted_polygonized_path, "polygon_layer", "ogr")
-    fields = polygon_layer.fields()
-    request = QgsFeatureRequest().setFilterExpression(f"area < {area_threshold}")
     if not polygon_layer.isValid():
         logger.error(f"polygon_layer is not valid")
         return ""
     area_threshold = 50000
     minor_area_threshold = 200
+    request = QgsFeatureRequest().setFilterExpression(f"area < {area_threshold}")
     iteration = 0
     while True:
         iteration += 1
@@ -520,8 +537,8 @@ def adjust_road(road_feature_path, TAZ_raster_path):
         #                                    request = request, 
         #                                    area_threshold = area_threshold, 
         #                                    minor_area_threshold = minor_area_threshold)
-        adjusted_num = parallel_mingle_road(polygon_layer = polygon_layer, 
-                                            fields = fields, 
+        joined_polygon_layer = join_sample_into_polygon(polygon_layer, TAZ_raster_path)
+        adjusted_num = parallel_mingle_road(joined_polygon_layer= joined_polygon_layer,
                                             request = request, 
                                             area_threshold = area_threshold, 
                                             minor_area_threshold = minor_area_threshold,
@@ -530,7 +547,7 @@ def adjust_road(road_feature_path, TAZ_raster_path):
             logger.debug(f"no more adjustment")
             break
         logger.debug(f"adjusted_num: {adjusted_num}")
-        reindex_feature(polygonized_path, "FID")
+        #reindex_feature(polygonized_path, "FID")
 
     logger.debug(f"polygonized_path: {polygonized_path}")
     adjust_road_path = polygon_to_line(polygonized_path)
@@ -562,21 +579,22 @@ def split_road_by_geometry(adjust_road_path):
     return adjust_road_path
 
 def process_location(location_dir, base_road_filepath, lcz_path, landcover_path, boundary_city_path):
-    natural_mask_path = create_image_mask(location_dir, landcover_path, "natural")
-    buffered_natural_mask_path = create_boundary_mask(natural_mask_path, buffer_size = 20)
-    logger.info(f"buffered_natural_mask_path: {buffered_natural_mask_path}")
-    #natural_path = create_contour_mask(location_dir, lcz_path, "natural")
-    natural_path = create_boundary_mask(natural_mask_path, buffer_size = 10)
-    logger.info(f"natural_path: {natural_path}")
-    water_mask_path = create_image_mask(location_dir, landcover_path, "water")
-    logger.info(f"water_mask_path: {water_mask_path}")
-    water_path = create_boundary_mask(water_mask_path, buffer_size = 10)
-    logger.info(f"water_path: {water_path}")
+    #natural_mask_path = create_image_mask(location_dir, landcover_path, "natural")
+    #buffered_natural_mask_path = create_boundary_mask(natural_mask_path, buffer_size = 50)
+    #logger.info(f"buffered_natural_mask_path: {buffered_natural_mask_path}")
+    ##natural_path = create_contour_mask(location_dir, lcz_path, "natural")
+    #natural_path = create_boundary_mask(natural_mask_path, buffer_size = 10)
+    #logger.info(f"natural_path: {natural_path}")
+    #water_mask_path = create_image_mask(location_dir, lcz_path, "water") # landcover_path has bridge pixels
+    #logger.info(f"water_mask_path: {water_mask_path}")
+    #water_path = create_boundary_mask(water_mask_path, buffer_size = 10)
+    #logger.info(f"water_path: {water_path}")
 
-    merged_vector_path = merge_road(base_road_filepath, buffered_natural_mask_path, natural_path, water_path)
-    logger.info(f"merged_vector_path: {merged_vector_path}")
-    simplified_merged_vector_path = simplify_road(merged_vector_path)
-    logger.info(f"simplified_merged_vector_path: {simplified_merged_vector_path}")
+    #merged_line_path = merge_road(base_road_filepath, buffered_natural_mask_path, natural_path, water_path)
+    #logger.info(f"merged_line_path: {merged_line_path}")
+    #simplified_merged_vector_path = simplify_road(merged_line_path)
+    #logger.info(f"simplified_merged_vector_path: {simplified_merged_vector_path}")
+    simplified_merged_vector_path = "/mnt/repo/YZB/TAZ/precise/LCZ/wuhan/natural_mask_r2v_flt_p_b_p2l_m2s_f_roads_p_j_d_s_s_selected_mask_m_f_d_sm_sp_d_e_v_sl_l_m_f_d.shp"
     adjust_road_path = adjust_road(simplified_merged_vector_path, lcz_path)
     logger.info(f"adjust_road_path: {adjust_road_path}")
     pure_road_path = split_road_by_purity(adjust_road_path, lcz_path, boundary_city_path)
@@ -590,8 +608,8 @@ def process_location(location_dir, base_road_filepath, lcz_path, landcover_path,
 
 def __main__():
     app.initQgis()
-    total_base_road_filepath = copy_base_road()
     lcz_dir = os.getenv("LCZ_DIR")
+    total_base_road_filepath = copy_base_road()
     total_landcover_path = os.path.join(os.getenv("LAND_COVER_DIR"), os.getenv("COVER_YEAR") + ".tif")
     for location in os.listdir(lcz_dir):
         location_dir = os.path.join(lcz_dir, location)
@@ -608,7 +626,7 @@ def __main__():
         cliped_tif_path = clip_raster(tif_path, boundary_city_path)
         logger.info(f"cliped_LCZ_tif_path: {cliped_tif_path}")
 
-        cliped_landcover_path = clip_raster(total_landcover_path, boundary_city_path)
+        cliped_landcover_path = clip_raster(total_landcover_path, boundary_city_path, os.path.join(location_dir, "landcover.tif"))
         logger.info(f"cliped_landcover_path: {cliped_landcover_path}")
 
         result = process_location(location_dir, base_road_filepath, cliped_tif_path, cliped_landcover_path, boundary_city_path)

@@ -41,6 +41,8 @@ def generate_save_path(origin_path, output_path, prefix = "", type = "vector"):
     else:
         extension = ""
     if output_path == "":
+        if not isinstance(origin_path, str):
+            origin_path = origin_path.source()
         dir = os.path.dirname(origin_path)
         name = os.path.basename(origin_path).split('.')[0]
         new_path = os.path.join(dir, f'{name}_{prefix}{extension}')
@@ -642,6 +644,7 @@ def shortest_line(source_path, target_path, max_neighbor, max_distance, shortest
     shortest_line_path = generate_save_path(source_path, shortest_line_path, "sl")
     if os.path.exists(shortest_line_path):
         delete_shapefile(shortest_line_path)
+    QgsProject.instance().setDistanceUnits(QgsUnitTypes.DistanceMeters)
     shortest_line_params = {
         'DISTANCE':max_distance,
         'DESTINATION':target_path,
@@ -887,3 +890,37 @@ def calc_purity(polygon_layer, sample_layer, output_feature_path = ""):
         return ""
     return join_by_attribute(polygon_layer, result['OUTPUT'], 'FID')
 
+def filter_by_line_length(input_feature_path, distance):
+    '''
+    Use QGIS API to calculate the length of the input feature layer
+    input_feature_path: the path of the input feature shapefile
+    output_feature_path: the path of the output feature shapefile
+    '''
+    layer = QgsVectorLayer(input_feature_path, "input_feature_layer", "ogr")
+    if not layer.isValid():
+        logger.error(f"input_feature_layer is not valid")
+        return ""
+    # calculate the length of the input feature layer
+    length_field = QgsField(
+        name="length",
+        type=QMetaType.Type.Double,
+        len=10,
+        prec=3,
+    )
+    layer.dataProvider().addAttributes([length_field])
+    layer.updateFields()
+    length_field_index = layer.fields().indexOf("length")
+    length_map = {
+        f.id(): {length_field_index: f.geometry().length()}
+        for f in layer.getFeatures()
+    }
+    layer.dataProvider().changeAttributeValues(length_map)
+    
+    # filter the features by the length
+    output_feature_path = generate_save_path(input_feature_path, "", "l")
+    params = {
+        'INPUT':input_feature_path,
+        'EXPRESSION':f'length < {distance} and length > 0',
+        'OUTPUT':output_feature_path
+    }
+    return run_processing_algorithm("native:extractbyexpression", params)
