@@ -7,7 +7,7 @@ import os
 import logging
 
 logging.basicConfig(filename='split_LCZ.log', level=logging.DEBUG)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("split")
 console_handler = logging.StreamHandler()
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 console_handler.setFormatter(formatter)
@@ -247,20 +247,8 @@ def calc_remained_road(splited_with_feature_path, exclude_list):
     if os.path.exists(output_path):
         delete_shapefile(output_path)
 
-    transform_context = QgsProject.instance().transformContext()
-    options = QgsVectorFileWriter.SaveVectorOptions()
-    options.driverName = "ESRI Shapefile"
-    options.fileEncoding = "utf-8"
-
-    error = QgsVectorFileWriter.writeAsVectorFormatV3(
-        output_layer,
-        output_path,
-        transform_context,
-        options,
-    )
-    if (error[0] != 0):
-        logger.error(f"error writing output layer: {error}")
-        return ""
+    if not export_vector_layer(output_layer, output_path):
+        raise Exception(f"Failed to export the result layer to {output_path}")
     return output_path
 
 def post_process_road(road_filepath, feature_path, intersection_with_feature_path):
@@ -306,7 +294,8 @@ def merge_road(base_road_filepath, natural_mask_path, natural_path, water_path):
     logger.debug(f"processed_road_path: {processed_road_path}")
     masked_road_path = exclude_by_mask(processed_road_path, natural_mask_path)
     logger.debug(f"masked_road_path: {masked_road_path}")
-    merged_vector_path = merge_vector([masked_road_path, natural_path, water_path])
+    #merged_vector_path = merge_vector([masked_road_path, natural_path, water_path])
+    merged_vector_path = merge_vector([masked_road_path, natural_path])
     return merged_vector_path
 
 def simplify_road(input_feature_path):
@@ -368,7 +357,7 @@ def join_sample_into_polygon(polygon_layer, TAZ_raster_path):
     logger.debug(f"joined sample value into polygon layer")
     return joined_polygon_layer
 
-def parallel_mingle_road(joined_polygon_layer, request, area_threshold, minor_area_threshold, TAZ_raster_path):
+def parallel_mingle_road(output_path, joined_polygon_layer, request, area_threshold, minor_area_threshold):
     def merged_into_closest_neighbor(feature, polygon_layer, polygon_index, fields, area_threshold, minor_area_threshold):
         fid_field_index = fields.indexOf("FID")
         area_field_index = fields.indexOf("area")
@@ -388,10 +377,11 @@ def parallel_mingle_road(joined_polygon_layer, request, area_threshold, minor_ar
             return None
         closest_neighbor_fid = 0
         min_distance = 100
-        for candidate_fid in candidates:
-            if candidate_fid == fid:
+        for candidate_id in candidates:
+            candidate = polygon_layer.getFeature(candidate_id)
+            condidate_neighbor_fid = candidate.attributes()[fid_field_index]
+            if condidate_neighbor_fid == fid:
                 continue
-            candidate = polygon_layer.getFeature(candidate_fid)
             if not feature_geom.touches(candidate.geometry()):
                 continue
             candidate_sample_value = candidate.attributes()[sample_field_index]
@@ -450,17 +440,15 @@ def parallel_mingle_road(joined_polygon_layer, request, area_threshold, minor_ar
             #        if result:
             #            adjusted_num += 1
     aggregate_layer = aggregate_features(joined_polygon_layer, 'FID', None)
-    
+
     # copy and delete the aggregate layer into joined_polygon_layer
-    with edit(joined_polygon_layer):
-        # delete all features in joined_polygon_layer
-        joined_polygon_layer.deleteFeatures(list(range(joined_polygon_layer.featureCount())))
-        # add the aggregate layer into joined_polygon_layer
-        for feature in aggregate_layer.getFeatures():
-            joined_polygon_layer.addFeature(feature)
-        aggregate_layer.deleteFeatures(list(range(aggregate_layer.featureCount())))
-    
-    logger.debug("reloaded polygon layer")
+    aggregate_layer.selectAll()
+    joined_polygon_layer = processing.run("native:saveselectedfeatures", {'INPUT': aggregate_layer, 'OUTPUT': 'TEMPORARY_OUTPUT'})['OUTPUT']
+    aggregate_layer.removeSelection()
+
+    QgsProject.instance().removeMapLayer(aggregate_layer.id())
+    if not export_vector_layer(joined_polygon_layer, output_path):
+        raise Exception(f"Failed to export the result layer to {output_path}")
     return adjusted_num
 
 def sequence_mingle_road(polygon_layer, fields, request, area_threshold, minor_area_threshold):
@@ -529,6 +517,8 @@ def adjust_road(road_feature_path, TAZ_raster_path):
     minor_area_threshold = 200
     request = QgsFeatureRequest().setFilterExpression(f"area < {area_threshold}")
     iteration = 0
+    poly_output_path = generate_save_path(road_feature_path, "", "adj")
+
     while True:
         iteration += 1
         logger.debug(f"iteration {iteration}")
@@ -538,19 +528,26 @@ def adjust_road(road_feature_path, TAZ_raster_path):
         #                                    area_threshold = area_threshold, 
         #                                    minor_area_threshold = minor_area_threshold)
         joined_polygon_layer = join_sample_into_polygon(polygon_layer, TAZ_raster_path)
-        adjusted_num = parallel_mingle_road(joined_polygon_layer= joined_polygon_layer,
-                                            request = request, 
-                                            area_threshold = area_threshold, 
-                                            minor_area_threshold = minor_area_threshold,
-                                            TAZ_raster_path = TAZ_raster_path)
+        adjusted_num = parallel_mingle_road(
+            output_path= poly_output_path,
+            joined_polygon_layer= joined_polygon_layer,
+            request = request,
+            area_threshold = area_threshold,
+            minor_area_threshold = minor_area_threshold)
+        QgsProject.instance().removeMapLayer(joined_polygon_layer.id())
+        QgsProject.instance().removeMapLayer(polygon_layer.id())
+        polygon_layer = QgsVectorLayer(poly_output_path, "polygon_layer", "ogr")
+        if not polygon_layer.isValid():
+            logger.error(f"polygon_layer is not valid")
+            raise Exception(f"polygon_layer is not valid")
+        logger.debug("reloaded polygon layer")
         if adjusted_num == 0:
             logger.debug(f"no more adjustment")
             break
         logger.debug(f"adjusted_num: {adjusted_num}")
-        #reindex_feature(polygonized_path, "FID")
 
-    logger.debug(f"polygonized_path: {polygonized_path}")
-    adjust_road_path = polygon_to_line(polygonized_path)
+    logger.debug(f"polygon output layer: {poly_output_path}")
+    adjust_road_path = polygon_to_line(poly_output_path)
     return adjust_road_path
 
 def split_road_by_purity(adjust_road_path, LCZ_raster_path, boundary_city_path):

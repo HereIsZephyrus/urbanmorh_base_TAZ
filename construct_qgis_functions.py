@@ -7,7 +7,24 @@ import os
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+logger = logging.getLogger("qgis_functions")
 
+def export_vector_layer(input_layer, output_path):
+    transform_context = QgsProject.instance().transformContext()
+    options = QgsVectorFileWriter.SaveVectorOptions()
+    options.driverName = "ESRI Shapefile"
+    options.fileEncoding = "utf-8"
+    error = QgsVectorFileWriter.writeAsVectorFormatV3(
+        input_layer,
+        output_path,
+        transform_context,
+        options,
+    )
+    if (error[0] != 0):
+        logger.error(f"error writing output layer: {error}")
+        return False
+    
+    return True
 
 def delete_shapefile(shp_path):
     shp_dir = os.path.dirname(shp_path)
@@ -562,14 +579,8 @@ def exclude_by_mask(input_feature_path, mask_path, output_feature_path = ""):
                     result_layer.dataProvider().addFeature(line_feature)
 
     # export the result layer to the output feature path
-    transform_context = QgsProject.instance().transformContext()
-    options = QgsVectorFileWriter.SaveVectorOptions()
-    options.driverName = "ESRI Shapefile"
-    options.fileEncoding = "utf-8"
-    error = QgsVectorFileWriter.writeAsVectorFormatV3(result_layer, output_feature_path, transform_context, options)
-    if error[0] != 0:
-        logger.error(f"error writing output layer: {error}")
-        return ""
+    if not export_vector_layer(result_layer, output_feature_path):
+        raise Exception(f"Failed to export the result layer to {output_feature_path}")
     return output_feature_path
 
 def simplify_shapefile(input_feature_path, tolerance, simplified_path = ""):
