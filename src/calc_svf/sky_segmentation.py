@@ -2,20 +2,37 @@ from PIL import Image
 from transformers import pipeline
 import os
 import tempfile
-from fisheye import generate_fisheye_image
+from io import BytesIO
 
 # 初始化分割模型
 segmenter = pipeline("image-segmentation", model="nvidia/segformer-b0-finetuned-ade-512-512")
 
-def extract_and_save_sky_mask(image_path, output_path):
-    image = Image.open(image_path)
+
+def extract_sky_mask_from_image(image):
+    """
+    从 PIL.Image 或 bytes 中提取天空掩码，返回 PIL.Image 或 None。
+    该函数用于内存处理，避免不必要的磁盘 IO。
+    """
+    if not isinstance(image, Image.Image):
+        # assume bytes
+        image = Image.open(BytesIO(image))
     results = segmenter(image)
     sky_mask = None
     for result in results:
-        if result['label'] == 'sky':
-            sky_mask = result['mask']  # 这是一个PIL图像
+        if result.get('label') == 'sky':
+            sky_mask = result.get('mask')  # 这是一个PIL图像
             break
+    return sky_mask
+
+
+def extract_and_save_sky_mask(image_path, output_path):
+    """
+    兼容旧接口：从磁盘图片提取天空掩码并保存到磁盘（保留，但原程序现在可选择不使用此函数）。
+    """
+    image = Image.open(image_path)
+    sky_mask = extract_sky_mask_from_image(image)
     if sky_mask is not None:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         sky_mask.save(output_path)
         print(f"天空掩码已保存: {output_path}")
     else:

@@ -2,17 +2,28 @@ import os
 import cv2
 import numpy as np
 from PIL import Image
+from io import BytesIO
 import math
 import logging
 import uuid
 
-def generate_fisheye_image(image_paths, output_path, temp_dir):
-    """
-    按 0,90,180,270 顺序水平拼接图像
+def _open_maybe(path_or_bytes_or_pil):
+    """Helper to obtain a PIL.Image from a path, bytes or PIL.Image."""
+    if isinstance(path_or_bytes_or_pil, Image.Image):
+        return path_or_bytes_or_pil.convert('RGB')
+    if isinstance(path_or_bytes_or_pil, (bytes, bytearray)):
+        return Image.open(BytesIO(path_or_bytes_or_pil)).convert('RGB')
+    # assume it's a path
+    return Image.open(path_or_bytes_or_pil).convert('RGB')
 
-    :param image_paths: 四个方向图片的字典 {direction: filepath}
+
+def generate_fisheye_image(image_paths, output_path, temp_dir=None):
+    """
+    按 0,90,180,270 顺序水平拼接图像，支持输入为文件路径、bytes 或 PIL.Image 对象。
+
+    :param image_paths: 四个方向图片的字典 {direction: filepath or bytes or PIL.Image}
     :param output_path: 输出拼接图像路径
-    :param temp_dir: 临时目录
+    :param temp_dir: 兼容参数（不再需要）
     :return: 是否成功
     """
     try:
@@ -22,8 +33,8 @@ def generate_fisheye_image(image_paths, output_path, temp_dir):
             logging.error(f"缺少方向图片: {missing}")
             return False
 
-        # 读取并对齐高度后水平拼接
-        pil_images = [Image.open(image_paths[d]).convert('RGB') for d in required_directions]
+        # 读取并对齐高度后水平拼接（支持多种输入类型）
+        pil_images = [_open_maybe(image_paths[d]) for d in required_directions]
         heights = [im.height for im in pil_images]
         target_h = max(heights)
         resized = []
@@ -38,13 +49,11 @@ def generate_fisheye_image(image_paths, output_path, temp_dir):
         for im in resized:
             canvas.paste(im, (x, 0))
             x += im.width
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        pano_tmp = os.path.join(temp_dir, f"pano_{uuid.uuid4().hex[:8]}.png")
-        canvas.save(pano_tmp)
 
-        img = cv2.imread(pano_tmp)
+        # 直接用 numpy/cv2 处理，不再写入临时全景文件，减少磁盘 IO
+        img = cv2.cvtColor(np.array(canvas), cv2.COLOR_RGB2BGR)
         if img is None:
-            logging.error("无法读取临时拼接图像")
+            logging.error("无法构造拼接图像")
             return False
         rows, cols, c = img.shape
         R = int(cols / 2 / math.pi)
@@ -70,6 +79,7 @@ def generate_fisheye_image(image_paths, output_path, temp_dir):
                 if yp >= rows:
                     yp = rows - 1
                 new_img[j, i] = img[yp, xp]
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         cv2.imwrite(output_path, new_img)
         logging.info(f"鱼眼图已保存到: {output_path}")
         return True
