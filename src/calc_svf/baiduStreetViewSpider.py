@@ -78,23 +78,77 @@ def getPanoId(_lng, _lat):
         return None
 
 
-# 官方转换函数
-# 因为百度街景获取时采用的是经过二次加密的百度墨卡托投影bd09mc (Change wgs84 to baidu09)
-def wgs2bd09mc(wgs_x, wgs_y):
-    # to:5是转为bd0911，6是转为百度墨卡托
-    url = 'http://api.map.baidu.com/geoconv/v1/?coords={}&from=1&to=6&output=json&ak={}'.format(
-        str(wgs_x) + ',' + str(wgs_y),
-        'jWm6EiQXM1y3XYJOcdtzf8CyE5aytAgH'
-    )
-    res = openUrl(url).decode()
-    temp = json.loads(res)
-    bd09mc_x = 0
-    bd09mc_y = 0
-    if temp['status'] == 0:
-        bd09mc_x = temp['result'][0]['x']
-        bd09mc_y = temp['result'][0]['y']
 
-    return bd09mc_x, bd09mc_y
+def wgs84_to_gcj02(lng, lat):
+    import math
+    def out_of_china(lng, lat):
+        return not (73.66 < lng < 135.05 and 3.86 < lat < 53.55)
+    def transform_lat(lng, lat):
+        ret = -100.0 + 2.0 * lng + 3.0 * lat + 0.2 * lat * lat + 0.1 * lng * lat + 0.2 * math.sqrt(abs(lng))
+        ret += (20.0 * math.sin(6.0 * lng * math.pi) + 20.0 * math.sin(2.0 * lng * math.pi)) * 2.0 / 3.0
+        ret += (20.0 * math.sin(lat * math.pi) + 40.0 * math.sin(lat / 3.0 * math.pi)) * 2.0 / 3.0
+        ret += (160.0 * math.sin(lat / 12.0 * math.pi) + 320 * math.sin(lat * math.pi / 30.0)) * 2.0 / 3.0
+        return ret
+    def transform_lng(lng, lat):
+        ret = 300.0 + lng + 2.0 * lat + 0.1 * lng * lng + 0.1 * lng * lat + 0.1 * math.sqrt(abs(lng))
+        ret += (20.0 * math.sin(6.0 * lng * math.pi) + 20.0 * math.sin(2.0 * lng * math.pi)) * 2.0 / 3.0
+        ret += (20.0 * math.sin(lng * math.pi) + 40.0 * math.sin(lng / 3.0 * math.pi)) * 2.0 / 3.0
+        ret += (150.0 * math.sin(lng / 12.0 * math.pi) + 300.0 * math.sin(lng / 30.0 * math.pi)) * 2.0 / 3.0
+        return ret
+    if out_of_china(lng, lat):
+        return lng, lat
+    a = 6378245.0
+    ee = 0.00669342162296594323
+    dlat = transform_lat(lng - 105.0, lat - 35.0)
+    dlng = transform_lng(lng - 105.0, lat - 35.0)
+    radlat = lat / 180.0 * math.pi
+    magic = math.sin(radlat)
+    magic = 1 - ee * magic * magic
+    sqrtmagic = math.sqrt(magic)
+    dlat = (dlat * 180.0) / ((a * (1 - ee)) / (magic * sqrtmagic) * math.pi)
+    dlng = (dlng * 180.0) / (a / sqrtmagic * math.cos(radlat) * math.pi)
+    mglat = lat + dlat
+    mglng = lng + dlng
+    return mglng, mglat
+
+def gcj02_to_bd09(lng, lat):
+    import math
+    z = math.sqrt(lng * lng + lat * lat) + 0.00002 * math.sin(lat * math.pi)
+    theta = math.atan2(lat, lng) + 0.000003 * math.cos(lng * math.pi)
+    bd_lng = z * math.cos(theta) + 0.0065
+    bd_lat = z * math.sin(theta) + 0.006
+    return bd_lng, bd_lat
+
+def bd09_to_bd09mc(lng, lat):
+    # 百度官方LL2MC参数
+    LL2MC = [
+        [ -0.0015702102444, 111320.7020616939, 1704480524535203, -10338987376042340, 26112667856603880, -35149669176653700, 26595700718403920, -10725012454188240, 1800819912950474, 82.5 ],
+        [ 0.0008277824516172526, 111320.7020463578, 647795574.6671607, -4082003173.641316, 10774905663.51142, -15171875531.51559, 12053065338.62167, -5124939663.577472, 913311935.9512032, 67.5 ],
+        [ 0.00337398766765, 111320.7020202162, 4481351.045890365, -23393751.19931662, 79682215.47186455, -115964993.2797253, 97236711.15602145, -43661946.33752821, 8477230.501135234, 52.5 ],
+        [ 0.00220636496208, 111320.7020209128, 51751.86112841131, 3796837.749470245, 992013.7397791013, -1221952.21711287, 1340652.697009075, -620943.6990984312, 144416.9293806241, 37.5 ],
+        [ -0.0003441963504368392, 111320.7020576856, 278.2353980772752, 2485758.690035394, 6070.750963243378, 54821.18345352118, 9540.606633304236, -2710.55326746645, 1405.483844121726, 22.5 ],
+        [ -0.0003218135878613132, 111320.7020701615, 0.00369383431289, 823725.6402795718, 0.46104986909093, 2351.343141331292, 1.58060784298199, 8.77738589078284, 0.37238884252424, 7.45 ]
+    ]
+    LLBAND = [75, 60, 45, 30, 15, 0]
+    abs_lat = abs(lat)
+    for i in range(len(LL2MC)):
+        if abs_lat >= LLBAND[i]:
+            c = LL2MC[i]
+            break
+    else:
+        c = LL2MC[-1]
+    x = c[0] + c[1] * abs(lng)
+    y = abs(lat) / c[9]
+    y = c[2] + c[3] * y + c[4] * y ** 2 + c[5] * y ** 3 + c[6] * y ** 4 + c[7] * y ** 5 + c[8] * y ** 6
+    x *= (-1 if lng < 0 else 1)
+    y *= (-1 if lat < 0 else 1)
+    return x, y
+
+def wgs2bd09mc(lng, lat):
+    lng, lat = wgs84_to_gcj02(lng, lat)
+    lng, lat = gcj02_to_bd09(lng, lat)
+    lng, lat = bd09_to_bd09mc(lng, lat)
+    return lng, lat
 
 
 if __name__ == "__main__":
@@ -122,7 +176,7 @@ if __name__ == "__main__":
     for i in range(len(data)):
         print('Processing No. {} point...'.format(i + 1))
         # gcj_x, gcj_y, wgs_x, wgs_y = data[i][0], data[i][1], data[i][2], data[i][3]
-        wgs_x, wgs_y = data[i][15], data[i][16]
+        wgs_x, wgs_y = float(data[i][15]), float(data[i][16])
 
         try:
             bd09mc_x, bd09mc_y = wgs2bd09mc(wgs_x, wgs_y)
